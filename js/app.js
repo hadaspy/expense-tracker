@@ -1,15 +1,19 @@
-// Expense Tracker web app — reads your Google Sheet through the Apps Script API.
+// Expense Tracker web app — reads and writes your Google Sheet through the Apps Script API.
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
   EXPENSE, INCOME, TRANSFER,
-  budgetProgress, byCategory, dayLabel, daysInMonth, formatMoney, groupWallets, inMonth,
-  monthLabel, monthTotals, prepareTransactions, timeAgo, walletBalances, walletFlow, walletIcon,
+  byCategory, dayLabel, daysInMonth, formatMoney, groupWallets, inMonth, monthLabel, monthPlan,
+  monthTotals, netWorth, prepareTransactions, timeAgo, walletBalances, walletFlow, walletIcon,
 } from './calc.js';
 import { demoData } from './demo.js';
+import { openEntrySheet } from './entry.js';
+import { ICONS, categoryIcon, esc } from './ui.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
+const TABS = ['home', 'transactions', 'budgets', 'reports'];
+const TAB_TITLES = { home: 'Home', transactions: 'Transactions', budgets: 'Budgets', reports: 'Reports' };
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 
@@ -33,12 +37,12 @@ const cached = isDemo ? null : storage.get(KEYS.cache);
 const today = new Date();
 
 const state = {
-  tab: 'overview',            // overview | summary | transactions
+  tab: 'home',
   view: null,                 // null | 'settings' | { wallet: name }
   month: { year: today.getFullYear(), month: today.getMonth() },
   filter: 'all',              // all | Expense | Income | Transfer
   search: '',
-  expanded: new Set(),        // expanded categories in the summary
+  expanded: new Set(),        // expanded categories in reports
   limit: 100,                 // transactions shown before "Show more"
   data: isDemo ? demoData() : cached?.data || null,
   fetchedAt: isDemo ? Date.now() : cached?.fetchedAt || null,
@@ -46,22 +50,8 @@ const state = {
   error: null,
 };
 
-const CATEGORY_ICONS = {
-  'food & drinks': '🍽️', transport: '🚗', shopping: '🛍️', 'bills & utilities': '🧾', housing: '🏠',
-  health: '💊', entertainment: '🎬', education: '📚', travel: '✈️', 'gifts & donations': '🎁',
-  salary: '💼', bonus: '🎉', business: '🏪', investment: '📈', gift: '🎁', other: '🏷️',
-};
-const categoryIcon = (name) => CATEGORY_ICONS[String(name).toLowerCase()] || '🏷️';
-
-const money = (value) => formatMoney(value, {
-  currency: settings.currency || (isDemo ? 'Rp' : ''),
-  decimals: Number(settings.decimals) || 0,
-});
-
-/** Escapes text from the sheet before putting it into HTML. */
-function esc(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-}
+const decimals = () => Number(settings.decimals) || 0;
+const money = (value) => formatMoney(value, { currency: settings.currency || (isDemo ? 'Rp' : ''), decimals: decimals() });
 
 let memo = null;
 /** Transactions with parsed dates + wallet balances, recalculated only when the data changes. */
@@ -75,12 +65,12 @@ function computed() {
 
 // ---------- API ----------
 
-async function callApi(url, key, action) {
+async function request(url, init = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    // Plain GET without custom headers, so the browser doesn't need a CORS preflight
-    const response = await fetch(`${url}?key=${encodeURIComponent(key)}&action=${action}`, { signal: controller.signal });
+    // No custom headers: GET and text/plain POST don't need a CORS preflight (Apps Script can't answer one)
+    const response = await fetch(url, { ...init, signal: controller.signal });
     if (!response.ok) throw new Error(`The server answered with HTTP ${response.status}.`);
     let json;
     try {
@@ -92,12 +82,19 @@ async function callApi(url, key, action) {
     return json;
   } catch (error) {
     if (error.name === 'AbortError') throw new Error('The server took too long to respond. Try again.');
-    if (error instanceof TypeError) throw new Error('Could not reach the server. Check your internet connection and the URL.');
+    if (error instanceof TypeError) throw new Error('Could not reach the server. Check your internet connection.');
     throw error;
   } finally {
     clearTimeout(timer);
   }
 }
+
+const apiGet = (action, url = settings.url, key = settings.key) =>
+  request(`${url}?key=${encodeURIComponent(key)}&action=${action}`);
+
+// A string body is sent as text/plain, which Apps Script reads from e.postData.contents
+const apiPost = (body) =>
+  request(settings.url, { method: 'POST', body: JSON.stringify({ ...body, key: settings.key }) });
 
 async function refresh() {
   if (isDemo || state.loading || !settings.url || !settings.key) return;
@@ -105,7 +102,7 @@ async function refresh() {
   state.error = null;
   renderHeader();
   try {
-    const data = await callApi(settings.url, settings.key, 'data');
+    const data = await apiGet('data');
     state.data = data;
     state.fetchedAt = Date.now();
     storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
@@ -117,20 +114,61 @@ async function refresh() {
   }
 }
 
-// ---------- icons ----------
+// ---------- saving / deleting (used by the entry sheet and swipe-to-delete) ----------
 
-const svg = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
-const ICONS = {
-  overview: svg('<rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18"/><path d="M7 3h10"/><circle cx="16.5" cy="15" r="1.2"/>'),
-  summary: svg('<circle cx="12" cy="12" r="9"/><path d="M12 3v9l6.5 6.2"/>'),
-  transactions: svg('<path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>'),
-  refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>'),
-  settings: svg('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
-  back: svg('<path d="M15 18l-6-6 6-6"/>'),
-  chevron: svg('<path d="M9 6l6 6-6 6"/>'),
-  left: svg('<path d="M15 6l-6 6 6 6"/>'),
-  right: svg('<path d="M9 6l6 6-6 6"/>'),
-};
+/** Applies a change to the local copy right away, so the app updates without waiting for a reload. */
+function applyLocal(change) {
+  state.data = { ...state.data, transactions: change([...(state.data.transactions || [])]) };
+  if (!isDemo) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
+  render();
+}
+
+async function saveTransaction(transaction, id = null) {
+  if (id) {
+    if (!isDemo) await apiPost({ action: 'update', id, transaction });
+    applyLocal((list) => list.map((t) => (t.id === id ? { id, ...transaction } : t)));
+    toast(`Updated #${id}`);
+  } else {
+    const newId = isDemo
+      ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1
+      : (await apiPost({ action: 'add', transaction })).id;
+    applyLocal((list) => [...list, { id: newId, ...transaction }]);
+    toast(`Saved #${newId}`);
+  }
+  refresh(); // sync in the background (e.g. entries added from Telegram meanwhile)
+}
+
+async function deleteTransaction(id) {
+  if (!isDemo) await apiPost({ action: 'delete', id });
+  applyLocal((list) => list.filter((t) => t.id !== id));
+  toast(`Deleted #${id}`);
+  refresh();
+}
+
+function openEntry(id = null) {
+  if (!state.data) return;
+  const tx = id ? (state.data.transactions || []).find((t) => t.id === id) : null;
+  if (id && !tx) return;
+  openEntrySheet({
+    data: state.data,
+    money,
+    decimals: decimals(),
+    tx,
+    onSave: (transaction) => saveTransaction(transaction, tx ? tx.id : null),
+    onDelete: tx ? (txId) => deleteTransaction(txId) : null,
+  });
+}
+
+function toast(message) {
+  document.querySelector('.toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('hide'), 2200);
+  setTimeout(() => el.remove(), 2600);
+}
 
 // ---------- shared pieces ----------
 
@@ -155,17 +193,21 @@ function txRow(tx, perspective = null) {
     detail = (tx.subcategory ? `${tx.category} · ` : '') + tx.wallet;
   }
   const time = tx.when.toTimeString().slice(0, 5);
+  // Tap to edit; swipe left to reveal Delete
   return `
-    <li class="tx">
-      <span class="tx-icon ${tx.type.toLowerCase()}">${icon}</span>
-      <span class="tx-main">
-        <span class="tx-title">${esc(title)}</span>
-        <span class="tx-detail">${esc(detail)}${tx.note ? ` · <em>${esc(tx.note)}</em>` : ''}</span>
-      </span>
-      <span class="tx-side">
-        <span class="amount ${cls}">${sign}${esc(money(tx.amount))}</span>
-        <span class="tx-time">#${tx.id} · ${time}</span>
-      </span>
+    <li class="swipe">
+      <button class="swipe-delete" data-action="delete-tx" data-id="${tx.id}" tabindex="-1">${ICONS.trash}<span>Delete</span></button>
+      <div class="tx" data-action="edit-tx" data-id="${tx.id}" role="button" tabindex="0">
+        <span class="tx-icon ${tx.type.toLowerCase()}">${icon}</span>
+        <span class="tx-main">
+          <span class="tx-title">${esc(title)}</span>
+          <span class="tx-detail">${esc(detail)}${tx.note ? ` · <em>${esc(tx.note)}</em>` : ''}</span>
+        </span>
+        <span class="tx-side">
+          <span class="amount ${cls}">${sign}${esc(money(tx.amount))}</span>
+          <span class="tx-time">#${tx.id} · ${time}</span>
+        </span>
+      </div>
     </li>`;
 }
 
@@ -195,67 +237,146 @@ function bar(fraction, cls = '') {
   return `<span class="bar ${cls}"><span style="width:${width.toFixed(1)}%"></span></span>`;
 }
 
-// ---------- screens ----------
+const budgetClass = (fraction) => (fraction > 1 ? 'neg' : fraction >= 0.9 ? 'warn' : fraction >= 0.75 ? 'caution' : 'pos');
 
-function renderOverview() {
-  const { txs, balances } = computed();
-  const groups = groupWallets(state.data.wallets || [], balances);
-  const total = [...balances.values()].reduce((sum, v) => sum + v, 0);
+/** An amount that never breaks across lines ("Rp" stays with the number). */
+const nb = (value) => `<span class="nowrap">${esc(money(value))}</span>`;
+
+function budgetRow(b, daysLeft) {
+  const cls = budgetClass(b.fraction);
+  const left = b.limit - b.spent;
+  const perDay = left > 0 && daysLeft > 0 ? ` · <span class="nowrap">${esc(money(left / daysLeft))}/day</span>` : '';
+  return `
+    <li class="budget">
+      <span class="cat-line"><span>${categoryIcon(b.category)} ${esc(b.category)}</span><span class="${cls}">${Math.round(b.fraction * 100)}%</span></span>
+      ${bar(b.fraction, cls)}
+      <span class="muted">${nb(b.spent)} of ${nb(b.limit)} · ${left >= 0 ? `${nb(left)} left${perDay}` : `<span class="neg">${nb(-left)} over</span>`}</span>
+    </li>`;
+}
+
+function monthNav() {
+  const { year, month } = state.month;
   const now = new Date();
-  const month = monthTotals(inMonth(txs, now.getFullYear(), now.getMonth()));
+  const atCurrent = year > now.getFullYear() || (year === now.getFullYear() && month >= now.getMonth());
+  return `
+    <div class="month-nav">
+      <button class="icon-btn" data-action="month" data-delta="-1" aria-label="Previous month">${ICONS.left}</button>
+      <h2>${esc(monthLabel(year, month))}</h2>
+      <button class="icon-btn" data-action="month" data-delta="1" aria-label="Next month" ${atCurrent ? 'disabled' : ''}>${ICONS.right}</button>
+    </div>`;
+}
 
-  const walletGroups = groups.map((group) => `
-    <section>
-      <h2 class="section-title">
-        <span>${group.icon} ${esc(group.type)}</span>
-        ${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}
-      </h2>
-      <ul class="card list">
-        ${group.wallets.map((w) => `
-          <li>
-            <button class="row" data-action="wallet" data-name="${esc(w.name)}">
-              <span class="row-label">${esc(w.name)}</span>
-              <span class="row-value ${w.balance < 0 ? 'neg' : ''}">${esc(money(w.balance))}</span>
-              <span class="row-chevron">${ICONS.chevron}</span>
-            </button>
-          </li>`).join('')}
-      </ul>
-    </section>`).join('');
-
+/** The big "left to spend" card (Home and Budgets). */
+function planCard(plan, { compact = false } = {}) {
+  const over = plan.left < 0;
+  const label = plan.mode === 'budget' ? 'Left to spend' : 'Left this month';
+  const sub = plan.mode === 'budget'
+    ? `of ${money(plan.total)} budgeted`
+    : `income ${money(plan.income)} − spending ${money(plan.expense)}`;
+  const perDay = over
+    ? `<span class="neg">Over by ${esc(money(-plan.left))}</span>`
+    : plan.daysLeft > 0 && plan.left > 0
+      ? `≈ <strong>${esc(money(plan.perDay))}</strong> per day · ${plan.daysLeft} day${plan.daysLeft === 1 ? '' : 's'} left`
+      : '';
   return `
     <section class="hero card">
-      <p class="hero-label">Total balance</p>
-      <p class="hero-value ${total < 0 ? 'neg' : ''}">${esc(money(total))}</p>
+      <p class="hero-label">${label}</p>
+      <p class="hero-value ${over ? 'neg' : ''}">${esc(money(plan.left))}</p>
+      <p class="hero-sub">${esc(sub)}</p>
+      ${plan.total > 0 || plan.used > 0 ? bar(plan.fraction, budgetClass(plan.fraction)) : ''}
+      ${perDay ? `<p class="hero-perday">${perDay}</p>` : ''}
+      ${compact ? '' : `
       <div class="hero-split">
-        <div><span class="dot pos"></span>In this month<strong class="pos">${esc(money(month.income))}</strong></div>
-        <div><span class="dot neg"></span>Out this month<strong class="neg">${esc(money(month.expense))}</strong></div>
-      </div>
-    </section>
-    ${walletGroups || '<p class="empty">No wallets yet. Add them in the Wallets tab of your sheet.</p>'}
-    <section>
-      <h2 class="section-title"><span>Recent</span><button class="link" data-action="tab" data-tab="transactions">See all</button></h2>
-      ${txListByDay(txs, { limit: 5, showMore: false })}
+        <div><span class="dot pos"></span>In<strong class="pos">${esc(money(plan.income))}</strong></div>
+        <div><span class="dot neg"></span>Out<strong class="neg">${esc(money(plan.expense))}</strong></div>
+      </div>`}
     </section>`;
 }
 
-function renderSummary() {
+// ---------- screens ----------
+
+function renderHome() {
+  const { txs, balances } = computed();
+  const now = new Date();
+  const plan = monthPlan(state.data.budgets, inMonth(txs, now.getFullYear(), now.getMonth()), now.getFullYear(), now.getMonth(), now);
+  const groups = groupWallets(state.data.wallets || [], balances);
+  const worth = netWorth(balances);
+
+  const topBudgets = [...plan.budgets].sort((a, b) => b.fraction - a.fraction).slice(0, 3);
+  const budgetsHtml = topBudgets.length
+    ? `<section>
+        <h2 class="section-title"><span>Budgets</span><button class="link" data-action="tab" data-tab="budgets">See all</button></h2>
+        <ul class="card list padded">${topBudgets.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
+      </section>`
+    : `<p class="hint">💡 Add monthly limits in the <strong>Budgets</strong> tab of your sheet to see how much you can spend per day.</p>`;
+
+  const walletGroups = groups.map((group) => `
+    <h3 class="group-title"><span>${group.icon} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
+    <ul class="card list">
+      ${group.wallets.map((w) => `
+        <li>
+          <button class="row" data-action="wallet" data-name="${esc(w.name)}">
+            <span class="row-label">${esc(w.name)}</span>
+            <span class="row-value ${w.balance < 0 ? 'neg' : ''}">${esc(money(w.balance))}</span>
+            <span class="row-chevron">${ICONS.chevron}</span>
+          </button>
+        </li>`).join('')}
+    </ul>`).join('');
+
+  return `
+    ${planCard(plan)}
+    ${budgetsHtml}
+    <section>
+      <h2 class="section-title"><span>Accounts</span></h2>
+      <div class="card networth">
+        <div><span class="muted">Net worth</span><strong class="${worth.net < 0 ? 'neg' : ''}">${esc(money(worth.net))}</strong></div>
+        <div><span class="muted">Assets</span><strong>${esc(money(worth.assets))}</strong></div>
+        <div><span class="muted">Debts</span><strong class="${worth.debts ? 'neg' : ''}">${esc(money(worth.debts))}</strong></div>
+      </div>
+      ${walletGroups || '<p class="empty">No wallets yet. Add them in the Wallets tab of your sheet.</p>'}
+    </section>
+    <section>
+      <h2 class="section-title"><span>Recent</span><button class="link" data-action="tab" data-tab="transactions">See all</button></h2>
+      ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
+    </section>`;
+}
+
+function renderBudgets() {
+  const { txs } = computed();
+  const { year, month } = state.month;
+  const plan = monthPlan(state.data.budgets, inMonth(txs, year, month), year, month, new Date());
+  if (!plan.budgets.length) {
+    return `
+      ${monthNav()}
+      <section class="card empty-card">
+        <p class="empty-icon">🎯</p>
+        <h2>No budgets yet</h2>
+        <p class="muted">Open your Google Sheet, go to the <strong>Budgets</strong> tab and add one row per category:</p>
+        <p class="code">Food &amp; Drinks | 3000000</p>
+        <p class="muted">Then tap ↻ here. You'll see what's left to spend, a daily allowance, and warnings at 75% and 90%.</p>
+      </section>`;
+  }
+  const sorted = [...plan.budgets].sort((a, b) => b.fraction - a.fraction);
+  return `
+    ${monthNav()}
+    ${planCard(plan, { compact: true })}
+    <section>
+      <h2 class="section-title"><span>By category</span><span class="muted">${sorted.length}</span></h2>
+      <ul class="card list padded">${sorted.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
+    </section>
+    <p class="hint">Edit limits in the Budgets tab of your sheet, then tap ↻.</p>`;
+}
+
+function renderReports() {
   const { txs } = computed();
   const { year, month } = state.month;
   const monthTxs = inMonth(txs, year, month);
   const totals = monthTotals(monthTxs);
   const now = new Date();
   const isCurrent = year === now.getFullYear() && month === now.getMonth();
-  const isFuture = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth());
   const days = isCurrent ? now.getDate() : daysInMonth(year, month);
 
-  const nav = `
-    <div class="month-nav">
-      <button class="icon-btn" data-action="month" data-delta="-1" aria-label="Previous month">${ICONS.left}</button>
-      <h2>${esc(monthLabel(year, month))}</h2>
-      <button class="icon-btn" data-action="month" data-delta="1" aria-label="Next month" ${isCurrent || isFuture ? 'disabled' : ''}>${ICONS.right}</button>
-    </div>`;
-
-  if (!monthTxs.length) return `${nav}<p class="empty">No transactions in this month.</p>`;
+  if (!monthTxs.length) return `${monthNav()}<p class="empty">No transactions in this month.</p>`;
 
   const categoryList = (type, cls) => byCategory(monthTxs, type).map((c) => {
     const open = state.expanded.has(`${type}:${c.category}`);
@@ -273,27 +394,9 @@ function renderSummary() {
       </li>`;
   }).join('');
 
-  const budgets = budgetProgress(state.data.budgets, monthTxs);
-  const budgetHtml = budgets.length ? `
-    <section>
-      <h2 class="section-title"><span>Budgets</span></h2>
-      <ul class="card list padded">
-        ${budgets.map((b) => {
-          const cls = b.fraction > 1 ? 'neg' : b.fraction >= 0.8 ? 'warn' : 'pos';
-          const left = b.limit - b.spent;
-          return `
-            <li class="budget">
-              <span class="cat-line"><span>${categoryIcon(b.category)} ${esc(b.category)}</span><span class="${cls}">${Math.round(b.fraction * 100)}%</span></span>
-              ${bar(b.fraction, cls)}
-              <span class="muted">${esc(money(b.spent))} of ${esc(money(b.limit))} · ${left >= 0 ? `${esc(money(left))} left` : `${esc(money(-left))} over`}</span>
-            </li>`;
-        }).join('')}
-      </ul>
-    </section>` : '';
-
   const incomeList = categoryList(INCOME, 'pos');
   return `
-    ${nav}
+    ${monthNav()}
     <section class="stats">
       <div class="card stat"><span>Income</span><strong class="pos">${esc(money(totals.income))}</strong></div>
       <div class="card stat"><span>Expenses</span><strong class="neg">${esc(money(totals.expense))}</strong></div>
@@ -304,7 +407,6 @@ function renderSummary() {
       Avg ${esc(money(totals.expense / days))} per day
     </p>
     ${totals.expense ? `<section><h2 class="section-title"><span>Spending by category</span></h2><ul class="card list cats">${categoryList(EXPENSE, 'neg')}</ul></section>` : ''}
-    ${budgetHtml}
     ${incomeList ? `<section><h2 class="section-title"><span>Income by category</span></h2><ul class="card list cats">${incomeList}</ul></section>` : ''}`;
 }
 
@@ -328,6 +430,7 @@ function renderTransactions() {
       <input id="search" type="search" placeholder="Search notes, categories, wallets…" value="${esc(state.search)}" autocomplete="off">
     </div>
     <div class="chips">${chips}</div>
+    <p class="hint small">Tap a transaction to edit it · swipe left to delete</p>
     <div id="tx-list">${txListByDay(filteredTransactions())}</div>`;
 }
 
@@ -373,8 +476,8 @@ function settingsForm({ firstRun }) {
         </label>
         <label>Decimals
           <select name="decimals">
-            <option value="0" ${Number(settings.decimals) === 2 ? '' : 'selected'}>0 (25,000)</option>
-            <option value="2" ${Number(settings.decimals) === 2 ? 'selected' : ''}>2 (25.00)</option>
+            <option value="0" ${decimals() === 2 ? '' : 'selected'}>0 (25,000)</option>
+            <option value="2" ${decimals() === 2 ? 'selected' : ''}>2 (25.00)</option>
           </select>
         </label>
       </div>
@@ -416,7 +519,7 @@ const app = document.getElementById('app');
 function titleText() {
   if (state.view === 'settings') return 'Settings';
   if (state.view?.wallet) return state.view.wallet;
-  return { overview: 'Overview', summary: 'Summary', transactions: 'Transactions' }[state.tab];
+  return TAB_TITLES[state.tab];
 }
 
 function statusText() {
@@ -438,7 +541,7 @@ function headerHtml() {
       ${!isDemo ? `<button class="icon-btn ${state.loading ? 'spin' : ''}" data-action="refresh" aria-label="Refresh" ${state.loading ? 'disabled' : ''}>${ICONS.refresh}</button>` : ''}
       ${!inner && !isDemo ? `<button class="icon-btn" data-action="settings" aria-label="Settings">${ICONS.settings}</button>` : ''}
     </div>
-    ${isDemo ? '<p class="banner">You\'re looking at sample data. <a href="./">Exit preview</a></p>' : ''}
+    ${isDemo ? '<p class="banner">Sample data — changes aren\'t saved. <a href="./">Exit preview</a></p>' : ''}
     ${state.error ? `<p class="banner error">Couldn't update: ${esc(state.error)}${state.data ? ' Showing saved data.' : ''}</p>` : ''}`;
 }
 
@@ -455,9 +558,15 @@ function mainHtml() {
       : '<p class="empty">Couldn\'t load your data yet. Check Settings, then tap refresh.</p>';
   }
   if (state.view?.wallet) return renderWallet(state.view.wallet);
-  if (state.tab === 'summary') return renderSummary();
   if (state.tab === 'transactions') return renderTransactions();
-  return renderOverview();
+  if (state.tab === 'budgets') return renderBudgets();
+  if (state.tab === 'reports') return renderReports();
+  return renderHome();
+}
+
+function tabButton(tab) {
+  const active = state.view === null && state.tab === tab;
+  return `<button class="tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" ${active ? 'aria-current="page"' : ''}>${ICONS[tab]}<span>${TAB_TITLES[tab]}</span></button>`;
 }
 
 function render() {
@@ -465,14 +574,14 @@ function render() {
     app.innerHTML = renderSetup();
     return;
   }
-  const tabs = ['overview', 'summary', 'transactions'].map((tab) => `
-    <button class="tab ${state.view === null && state.tab === tab ? 'active' : ''}" data-action="tab" data-tab="${tab}">
-      ${ICONS[tab]}<span>${tab[0].toUpperCase() + tab.slice(1)}</span>
-    </button>`).join('');
   app.innerHTML = `
     <header class="topbar">${headerHtml()}</header>
     <main class="content">${mainHtml()}</main>
-    <nav class="tabbar">${tabs}</nav>`;
+    <nav class="tabbar">
+      ${tabButton('home')}${tabButton('transactions')}
+      <button class="tab-add" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
+      ${tabButton('budgets')}${tabButton('reports')}
+    </nav>`;
 }
 
 // ---------- navigation (uses browser history so the back gesture works) ----------
@@ -489,14 +598,87 @@ window.addEventListener('popstate', (event) => {
   render();
 });
 
+// ---------- swipe left on a transaction to reveal Delete ----------
+
+const SWIPE_OPEN = -92;
+let swipe = null;      // the row being dragged
+let suppressClick = false;
+
+function closeSwipes(except = null) {
+  app.querySelectorAll('.swipe.open').forEach((row) => {
+    if (row === except) return;
+    row.classList.remove('open');
+    row.querySelector('.tx').style.transform = '';
+    setTimeout(() => row.classList.remove('swiping'), 200);
+  });
+}
+
+app.addEventListener('pointerdown', (event) => {
+  const tx = event.target.closest('.swipe .tx');
+  if (!tx || event.pointerType === 'mouse' && event.button !== 0) return;
+  const row = tx.parentElement;
+  closeSwipes(row);
+  swipe = { row, tx, startX: event.clientX, startY: event.clientY, base: row.classList.contains('open') ? SWIPE_OPEN : 0, dx: 0, active: false };
+});
+
+app.addEventListener('pointermove', (event) => {
+  if (!swipe) return;
+  const dx = event.clientX - swipe.startX;
+  const dy = event.clientY - swipe.startY;
+  if (!swipe.active) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; } // vertical scroll
+    if (Math.abs(dx) < 10) return;
+    swipe.active = true;
+    swipe.tx.classList.add('dragging');
+    swipe.row.classList.add('swiping');
+  }
+  swipe.dx = dx;
+  const offset = Math.max(SWIPE_OPEN - 20, Math.min(0, swipe.base + dx));
+  swipe.tx.style.transform = `translateX(${offset}px)`;
+});
+
+function endSwipe() {
+  if (!swipe) return;
+  const { row, tx, base, dx, active } = swipe;
+  swipe = null;
+  if (!active) return;
+  tx.classList.remove('dragging');
+  suppressClick = true;
+  setTimeout(() => { suppressClick = false; }, 50);
+  const open = base + dx < SWIPE_OPEN / 2;
+  row.classList.toggle('open', open);
+  tx.style.transform = open ? `translateX(${SWIPE_OPEN}px)` : '';
+  if (!open) setTimeout(() => row.classList.remove('swiping'), 200); // after the slide-back animation
+}
+app.addEventListener('pointerup', endSwipe);
+app.addEventListener('pointercancel', endSwipe);
+
 // ---------- events ----------
 
-app.addEventListener('click', (event) => {
+app.addEventListener('click', async (event) => {
+  if (suppressClick) { event.preventDefault(); return; }
   const target = event.target.closest('[data-action]');
-  if (!target) return;
+  if (!target) { closeSwipes(); return; }
   const action = target.dataset.action;
 
-  if (action === 'tab') {
+  if (action === 'edit-tx') {
+    const row = target.parentElement;
+    if (row.classList.contains('open')) { closeSwipes(); return; } // first tap just closes the swipe
+    openEntry(Number(target.dataset.id));
+  } else if (action === 'delete-tx') {
+    const id = Number(target.dataset.id);
+    if (!confirm(`Delete transaction #${id}? This removes it from your sheet.`)) { closeSwipes(); return; }
+    target.disabled = true;
+    try {
+      await deleteTransaction(id);
+    } catch (error) {
+      toast(`Couldn't delete: ${error.message}`);
+      closeSwipes();
+      target.disabled = false;
+    }
+  } else if (action === 'add') {
+    openEntry();
+  } else if (action === 'tab') {
     if (state.view !== null) history.back();
     state.view = null;
     state.tab = target.dataset.tab;
@@ -535,10 +717,19 @@ app.addEventListener('click', (event) => {
       storage.remove(KEYS.settings);
       storage.remove(KEYS.cache);
       settings = {};
-      Object.assign(state, { data: null, fetchedAt: null, error: null, view: null, tab: 'overview' });
+      Object.assign(state, { data: null, fetchedAt: null, error: null, view: null, tab: 'home' });
       history.replaceState(null, '');
       render();
     }
+  }
+});
+
+// Enter / Space on a focused transaction opens it (keyboard access)
+app.addEventListener('keydown', (event) => {
+  const tx = event.target.closest?.('.tx[data-action="edit-tx"]');
+  if (tx && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    openEntry(Number(tx.dataset.id));
   }
 });
 
@@ -571,7 +762,7 @@ app.addEventListener('submit', async (event) => {
   status.className = 'form-status';
   status.textContent = 'Testing connection…';
   try {
-    const result = await callApi(values.url, values.key, 'ping');
+    const result = await apiGet('ping', values.url, values.key);
     const sourceChanged = values.url !== settings.url || values.key !== settings.key;
     settings = values;
     storage.set(KEYS.settings, settings);
@@ -605,13 +796,16 @@ setInterval(() => { if (!state.loading) renderHeader(); }, 30000);
 
 // ---------- start ----------
 
-// Optional starting tab from the address, e.g. …/#summary
-const startTab = location.hash.slice(1);
-if (['overview', 'summary', 'transactions'].includes(startTab)) state.tab = startTab;
+// Optional starting point from the address, e.g. …/#reports or …/#add
+const startHash = location.hash.slice(1);
+const legacyTabs = { overview: 'home', summary: 'reports' };
+const startTab = legacyTabs[startHash] || startHash;
+if (TABS.includes(startTab)) state.tab = startTab;
 
 history.replaceState({ view: null }, '');
 render();
 refresh();
+if (startHash === 'add') openEntry();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });

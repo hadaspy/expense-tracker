@@ -136,6 +136,49 @@ export function daysInMonth(year, month) {
   return new Date(year, month + 1, 0).getDate();
 }
 
+/**
+ * The "left to spend" number for a month (MoneyCoach's "left in your plan" + Spendee's daily allowance).
+ * With budgets: total budget limits minus what was spent in those categories.
+ * Without budgets: income minus spending.
+ */
+export function monthPlan(budgets, monthTransactions, year, month, now = new Date()) {
+  const totals = monthTotals(monthTransactions);
+  const progress = budgetProgress(budgets, monthTransactions);
+  const days = daysInMonth(year, month);
+  const isCurrent = now.getFullYear() === year && now.getMonth() === month;
+  const isPast = year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth());
+  const daysLeft = isCurrent ? days - now.getDate() + 1 : isPast ? 0 : days;
+
+  let mode, total, used;
+  if (progress.length) {
+    mode = 'budget';
+    total = progress.reduce((sum, b) => sum + b.limit, 0);
+    used = progress.reduce((sum, b) => sum + b.spent, 0);
+  } else {
+    mode = 'income';
+    total = totals.income;
+    used = totals.expense;
+  }
+  const left = total - used;
+  return {
+    mode, total, used, left, daysLeft, ...totals,
+    perDay: daysLeft > 0 ? Math.max(0, left) / daysLeft : 0,
+    fraction: total > 0 ? used / total : used > 0 ? 1 : 0,
+    budgets: progress,
+  };
+}
+
+/** What you own (positive balances) minus what you owe (negative balances, e.g. credit cards). */
+export function netWorth(balances) {
+  let assets = 0;
+  let debts = 0;
+  for (const value of balances.values()) {
+    if (value >= 0) assets += value;
+    else debts -= value;
+  }
+  return { assets, debts, net: assets - debts };
+}
+
 export function formatMoney(value, { currency = '', decimals = 0 } = {}) {
   const number = Math.abs(value).toLocaleString('en-US', {
     minimumFractionDigits: decimals,
