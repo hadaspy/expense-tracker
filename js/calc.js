@@ -8,15 +8,6 @@ export const TRANSFER = 'Transfer';
 // Order of wallet groups in the overview; unknown types are listed after these
 export const WALLET_TYPES = ['Bank', 'Cash', 'E-wallet', 'Credit Card', 'Savings', 'Investment', 'Stock', 'Other'];
 
-const WALLET_ICONS = {
-  bank: '🏦', cash: '💵', 'e-wallet': '📱', 'credit card': '💳',
-  savings: '🐷', investment: '📈', stock: '📈',
-};
-
-export function walletIcon(type) {
-  return WALLET_ICONS[String(type || '').toLowerCase()] || '👛';
-}
-
 /** "2026-11-06 14:30" → Date in the phone's local time (Safari can't parse this format itself). */
 export function parseDate(text) {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?/.exec(text || '');
@@ -52,7 +43,7 @@ export function walletBalances(wallets, transactions) {
   return balances;
 }
 
-/** Wallets grouped by type with subtotals: [{type, icon, total, wallets: [{name, type, balance}]}]. */
+/** Wallets grouped by type with subtotals: [{type, total, wallets: [{name, type, balance}]}]. */
 export function groupWallets(wallets, balances) {
   const groups = new Map();
   for (const w of wallets) {
@@ -68,7 +59,6 @@ export function groupWallets(wallets, balances) {
     .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
     .map(([type, list]) => ({
       type,
-      icon: walletIcon(type),
       total: list.reduce((sum, w) => sum + w.balance, 0),
       wallets: list,
     }));

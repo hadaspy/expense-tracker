@@ -1,8 +1,8 @@
 // The add/edit sheet: Expense · Income · Transfer switch, amount keypad, category grid,
 // wallet chips, Today / Yesterday / pick-a-date, note. Combines Spendee's "+" flow with
 // MoneyCoach's amount-first quick entry. Opens over the app; the app is not re-rendered meanwhile.
-import { EXPENSE, INCOME, TRANSFER, formatDateTime, walletIcon } from './calc.js';
-import { ICONS, categoryIcon, esc } from './ui.js';
+import { EXPENSE, INCOME, TRANSFER, formatDateTime } from './calc.js';
+import { ICONS, categoryIcon, esc, icon, walletIcon } from './ui.js';
 
 const LAST_KEY = 'expense-tracker.last-wallets';
 const MAX_DIGITS = 12;
@@ -149,7 +149,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
         <div class="chip-row">
           ${chip('Today', 'day', today, state.day === today)}
           ${chip('Tomorrow', 'day', tomorrow, state.day === tomorrow)}
-          <label class="chip date-chip ${custom ? 'active' : ''}">📅 ${esc(custom ? label : 'Pick date')}
+          <label class="chip date-chip ${custom ? 'active' : ''}">${icon('calendar-blank')} ${esc(custom ? label : 'Pick date')}
             <input type="date" data-field="day" value="${esc(state.day)}" aria-label="Pick a date">
           </label>
         </div>
@@ -164,7 +164,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       <div class="chip-row">
         ${chip('Today', 'day', today, state.day === today)}
         ${chip('Yesterday', 'day', yesterday, state.day === yesterday)}
-        <label class="chip date-chip ${custom ? 'active' : ''}">📅 ${esc(customLabel)}
+        <label class="chip date-chip ${custom ? 'active' : ''}">${icon('calendar-blank')} ${esc(customLabel)}
           <input type="date" data-field="day" max="${today}" value="${esc(state.day)}" aria-label="Pick a date">
         </label>
       </div>`;

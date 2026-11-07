@@ -1,6 +1,6 @@
 // "New wallet" sheet: name, type and what it holds today (its opening balance).
-import { WALLET_TYPES, formatNumber, walletIcon } from './calc.js';
-import { esc } from './ui.js';
+import { WALLET_TYPES, formatNumber } from './calc.js';
+import { esc, walletIcon } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');

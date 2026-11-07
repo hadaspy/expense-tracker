@@ -1,7 +1,7 @@
 // "Filters" sheet for the Transactions screen: date range, wallets, categories and amount.
 // The button at the bottom shows how many transactions match, updated as you pick.
-import { EMPTY_FILTERS, RANGES, formatNumber, walletIcon } from './calc.js';
-import { categoryIcon, esc } from './ui.js';
+import { EMPTY_FILTERS, RANGES, formatNumber } from './calc.js';
+import { categoryIcon, esc, walletIcon } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');

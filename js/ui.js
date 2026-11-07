@@ -58,10 +58,64 @@ export function highlight(text, query) {
 /** True when the phone asks for less motion (Settings → Accessibility → Motion). */
 export const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-const CATEGORY_ICONS = {
-  'food & drinks': '🍽️', transport: '🚗', shopping: '🛍️', 'bills & utilities': '🧾', housing: '🏠',
-  health: '💊', entertainment: '🎬', education: '📚', travel: '✈️', 'gifts & donations': '🎁',
-  salary: '💼', bonus: '🎉', business: '🏪', investment: '📈', gift: '🎁', other: '🏷️',
+import { PH } from './icon-data.js';
+
+/** An inline Phosphor duotone icon (see icon-data.js). It takes the surrounding text colour. */
+export const icon = (name, cls = '') =>
+  `<svg class="ico ${cls}" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">${PH[name] || PH.tag}</svg>`;
+
+// First match wins, so "Transport" is checked before "sport"
+const CATEGORY_RULES = [
+  [/transfer/, 'arrows-left-right'],
+  [/groc|supermarket/, 'shopping-cart'],
+  [/coffee|cafe/, 'coffee'],
+  [/food|drink|dining|restaurant|meal|eat/, 'fork-knife'],
+  [/fuel|petrol|gasoline/, 'gas-pump'],
+  [/public transport|bus|commute/, 'bus'],
+  [/transport|taxi|ride|car|parking|toll/, 'car'],
+  [/shop|cloth|fashion|apparel/, 'shopping-bag'],
+  [/electric|power/, 'lightning'],
+  [/water/, 'drop'],
+  [/internet|wifi/, 'wifi-high'],
+  [/phone|mobile|pulsa|data plan/, 'device-mobile'],
+  [/bill|utilit|tax/, 'receipt'],
+  [/hous|rent|home|mortgage/, 'house'],
+  [/pharm|medic|drug/, 'pill'],
+  [/health|doctor|hospital|clinic/, 'heartbeat'],
+  [/fitness|gym|\bsports?\b/, 'barbell'],
+  [/movie|cinema|film/, 'film-slate'],
+  [/game/, 'game-controller'],
+  [/music/, 'music-notes'],
+  [/subscri|streaming/, 'repeat'],
+  [/entertain|fun|hobby/, 'popcorn'],
+  [/educat|school|course|tuition|book|study/, 'graduation-cap'],
+  [/travel|trip|flight|holiday|vacation|hotel/, 'airplane-tilt'],
+  [/gift|donat|charity|zakat|tithe/, 'gift'],
+  [/salary|wage|payroll|paycheck/, 'briefcase'],
+  [/bonus|reward|prize/, 'confetti'],
+  [/business|store|sales/, 'storefront'],
+  [/saving/, 'piggy-bank'],
+  [/invest|stock|dividend|crypto/, 'chart-line-up'],
+  [/insur/, 'shield-check'],
+  [/pet|dog|cat\b/, 'paw-print'],
+  [/kid|child|baby/, 'baby'],
+  [/beauty|salon|care|spa/, 'sparkle'],
+  [/loan|debt|credit|installment/, 'hand-coins'],
+  [/interest/, 'percent'],
+  [/refund|cashback/, 'arrow-counter-clockwise'],
+  [/repair|maintenance|service/, 'wrench'],
+  [/electronic|gadget/, 'devices'],
+];
+
+/** Icon for a category (or subcategory) name; anything unknown gets a tag. */
+export const categoryIcon = (name) => {
+  const n = String(name || '').toLowerCase();
+  const hit = CATEGORY_RULES.find(([re]) => re.test(n));
+  return icon(hit ? hit[1] : 'tag');
 };
 
-export const categoryIcon = (name) => CATEGORY_ICONS[String(name).toLowerCase()] || '🏷️';
+const WALLET_ICONS = {
+  bank: 'bank', cash: 'money', 'e-wallet': 'device-mobile', 'credit card': 'credit-card',
+  savings: 'piggy-bank', investment: 'chart-line-up', stock: 'chart-line-up',
+};
+export const walletIcon = (type) => icon(WALLET_ICONS[String(type || '').toLowerCase()] || 'wallet');

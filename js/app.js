@@ -5,7 +5,7 @@ import {
   activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatMoney,
   goalProgress, groupWallets, inMonth, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
   occurrences, periodBounds, periodOf, periodRange, prepareTransactions, rangeBounds, setPayCycle, spendingParts, summarize,
-  timeAgo, toCsv, walletBalances, walletFlow, walletIcon,
+  timeAgo, toCsv, walletBalances, walletFlow,
 } from './calc.js';
 import { openBalanceSheet } from './balance.js';
 import { openBudgetSheet } from './budgets.js';
@@ -17,9 +17,9 @@ import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
-import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
+import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion, walletIcon } from './ui.js';
 
-const APP_VERSION = '4.2.0';
+const APP_VERSION = '4.3.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -627,13 +627,13 @@ function budgetRings(plan, monthTxs) {
 function txRow(tx, { perspective = null, query = '' } = {}) {
   const cls = amountClass(tx, perspective);
   const sign = cls === 'neg' ? '−' : cls === 'pos' ? '+' : '';
-  let icon, title, detail;
+  let iconHtml, title, detail;
   if (tx.type === TRANSFER) {
-    icon = '🔁';
+    iconHtml = icon('arrows-left-right');
     title = esc('Transfer');
     detail = `${highlight(tx.wallet, query)} → ${highlight(tx.toWallet, query)}`;
   } else {
-    icon = categoryIcon(tx.category);
+    iconHtml = categoryIcon(tx.category);
     title = highlight(tx.subcategory || tx.category || 'Uncategorized', query);
     detail = (tx.subcategory ? `${highlight(tx.category, query)} · ` : '') + highlight(tx.wallet, query);
   }
@@ -643,7 +643,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
     <li class="swipe">
       <button class="swipe-delete" data-action="delete-tx" data-id="${tx.id}" tabindex="-1">${ICONS.trash}<span>Delete</span></button>
       <div class="tx" data-action="edit-tx" data-id="${tx.id}" role="button" tabindex="0">
-        <span class="tx-icon ${tx.type.toLowerCase()}">${icon}</span>
+        <span class="tx-icon ${tx.type.toLowerCase()}">${iconHtml}</span>
         <span class="tx-main">
           <span class="tx-title">${title}</span>
           <span class="tx-detail">${detail}${tx.note ? ` · <em>${highlight(tx.note, query)}</em>` : ''}</span>
@@ -756,7 +756,7 @@ function ring(fraction, cls = '') {
 }
 
 function goalPace(g) {
-  if (g.reached) return '<span class="pos">Reached 🎉</span>';
+  if (g.reached) return `<span class="pos">Reached ${icon('confetti')}</span>`;
   const date = g.targetDate ? new Date(`${g.targetDate}T12:00`).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) : '';
   if (g.overdue) return `<span class="warn">Target date passed</span> · ${nb(g.remaining)} to go`;
   if (g.perMonth) return `≈ ${nb(g.perMonth)} a month until ${esc(date)}`;
@@ -841,7 +841,7 @@ function renderWallets() {
   const worth = netWorth(balances);
   const groups = groupWallets(wallets, balances);
   const list = groups.map((group) => `
-    <h3 class="group-title"><span>${group.icon} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
+    <h3 class="group-title"><span>${walletIcon(group.type)} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
     <ul class="card list">
       ${group.wallets.map((w) => `
         <li>
@@ -895,7 +895,7 @@ function renderRecurring() {
   if (!items.length) {
     return `
       <section class="card empty-card">
-        <p class="empty-icon">🔁</p>
+        <p class="empty-icon">${icon('repeat')}</p>
         <h2>Nothing repeats yet</h2>
         <p class="muted">Rent, subscriptions, a salary: set it once and it's added to your transactions on the day, every day, week, month or year.</p>
         <button class="btn-primary" data-action="new-recurring">New recurring item</button>
@@ -912,7 +912,7 @@ function renderRecurring() {
   }
   const row = (item) => {
     const title = item.type === TRANSFER ? 'Transfer' : item.note || item.subcategory || item.category;
-    const icon = item.type === TRANSFER ? '🔁' : categoryIcon(item.category);
+    const iconHtml = item.type === TRANSFER ? icon('arrows-left-right') : categoryIcon(item.category);
     const cls = item.type === EXPENSE ? 'neg' : item.type === INCOME ? 'pos' : 'neutral';
     const sign = item.type === EXPENSE ? '−' : item.type === INCOME ? '+' : '';
     const next = item.nextDate ? new Date(`${item.nextDate}T12:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '—';
@@ -920,7 +920,7 @@ function renderRecurring() {
     return `
       <li class="card recur ${item.active ? '' : 'paused'}">
         <button class="recur-main" data-action="edit-recurring" data-id="${item.id}" aria-label="Edit ${esc(title)}">
-          <span class="tx-icon ${item.type.toLowerCase()}">${icon}</span>
+          <span class="tx-icon ${item.type.toLowerCase()}">${iconHtml}</span>
           <span class="tx-main">
             <span class="tx-title">${esc(title)}</span>
             <span class="tx-detail">${esc(FREQUENCY_NAMES[item.frequency] || item.frequency)} · ${where}</span>
@@ -966,7 +966,7 @@ function renderBudgets() {
     return `
       ${monthNav()}
       <section class="card empty-card">
-        <p class="empty-icon">🎯</p>
+        <p class="empty-icon">${icon('target')}</p>
         <h2>No budgets yet</h2>
         <p class="muted">Set a monthly limit for the categories you want to watch. You'll see what's left to spend, a daily allowance, and warnings at 75% and 90%.</p>
         <button class="btn-primary" data-action="edit-budgets">Set budgets</button>
@@ -988,7 +988,7 @@ function renderGoals() {
   if (!goals.length) {
     return `
       <section class="card empty-card">
-        <p class="empty-icon">🏁</p>
+        <p class="empty-icon">${icon('flag')}</p>
         <h2>Save for what matters</h2>
         <p class="muted">Set a target, and optionally a date. Link a savings wallet and progress follows its balance, or add money by hand. You'll see how much to put aside each month.</p>
         <button class="btn-primary" data-action="add-goal">Create a goal</button>
@@ -1017,7 +1017,7 @@ function renderGoals() {
             <span class="row-chevron">${ICONS.chevron}</span>
           </button>
           <div class="goal-foot">
-            <span class="muted small">${g.wallet ? `${walletIcon(wallets.get(g.wallet))} Follows ${esc(g.wallet)}` : '✍️ Updated by you'}</span>
+            <span class="muted small">${g.wallet ? `${walletIcon(wallets.get(g.wallet))} Follows ${esc(g.wallet)}` : `${icon('pencil-simple')} Updated by you`}</span>
             ${g.wallet || g.reached ? '' : `<button class="pill-btn" data-action="add-money" data-name="${esc(g.name)}">+ Add money</button>`}
           </div>
         </li>`).join('')}
@@ -1126,17 +1126,17 @@ function activePills() {
       const fmt = (d) => (d ? new Date(`${d}T12:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '…');
       label = `${fmt(f.from)} – ${fmt(f.to)}`;
     }
-    pills.push(['range', '', `📅 ${label}`]);
+    pills.push(['range', '', `${icon('calendar-blank')} ${esc(label)}`, label]);
   }
-  f.wallets.forEach((w) => pills.push(['wallet', w, w]));
-  f.categories.forEach((c) => pills.push(['category', c, `${categoryIcon(c)} ${c}`]));
+  f.wallets.forEach((w) => pills.push(['wallet', w, esc(w), w]));
+  f.categories.forEach((c) => pills.push(['category', c, `${categoryIcon(c)} ${esc(c)}`, c]));
   if (Number(f.min) > 0 || Number(f.max) > 0) {
     const label = f.min && f.max ? `${money(f.min)} – ${money(f.max)}` : f.min ? `≥ ${money(f.min)}` : `≤ ${money(f.max)}`;
-    pills.push(['amount', '', label]);
+    pills.push(['amount', '', esc(label), label]);
   }
   if (!pills.length) return '';
-  return `<div class="pills">${pills.map(([kind, value, label]) => `
-    <button class="pill" data-action="remove-filter" data-kind="${kind}" data-v="${esc(value)}" aria-label="Remove filter ${esc(label)}">${esc(label)}${ICONS.close}</button>`).join('')}
+  return `<div class="pills">${pills.map(([kind, value, html, label]) => `
+    <button class="pill" data-action="remove-filter" data-kind="${kind}" data-v="${esc(value)}" aria-label="Remove filter ${esc(label)}">${html}${ICONS.close}</button>`).join('')}
     <button class="link small" data-action="clear-filters">Clear all</button></div>`;
 }
 
@@ -1878,28 +1878,3 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   });
   navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
 }
-
-// ---------- emoji follow the theme: every emoji is wrapped so the stylesheet can tint it blue ----------
-
-const EMOJI = /(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}|\p{Emoji_Modifier})*)/gu;
-function tintEmoji(root) {
-  if (!root || !root.nodeType) return;
-  const walker = document.createTreeWalker(root.nodeType === 3 ? root.parentNode : root, NodeFilter.SHOW_TEXT);
-  const nodes = [];
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    if (root.nodeType === 3 && n !== root) continue;
-    if (n.parentElement && !n.parentElement.closest('.emo, script, style, textarea, input, option, title') && /\p{Extended_Pictographic}/u.test(n.nodeValue)) nodes.push(n);
-  }
-  for (const node of nodes) {
-    const frag = document.createDocumentFragment();
-    node.nodeValue.split(EMOJI).forEach((part, i) => {
-      if (i % 2) { const span = document.createElement('span'); span.className = 'emo'; span.textContent = part; frag.appendChild(span); }
-      else if (part) frag.appendChild(document.createTextNode(part));
-    });
-    node.replaceWith(frag);
-  }
-}
-tintEmoji(document.body);
-new MutationObserver((mutations) => {
-  for (const m of mutations) m.addedNodes.forEach((n) => { if (n.nodeType === 1 || n.nodeType === 3) tintEmoji(n); });
-}).observe(document.body, { childList: true, subtree: true });

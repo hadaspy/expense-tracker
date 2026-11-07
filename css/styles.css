@@ -221,10 +221,16 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
 .bottom-block { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; height: calc(var(--safe-bottom) + 86px); background: var(--bg); }
 .bottom-block::before { content: ""; position: absolute; left: 0; right: 0; top: -18px; height: 18px; background: linear-gradient(to top, var(--bg), transparent); }
 
-/* emoji follow the blue theme (they are wrapped in .emo by the app) */
-.emo { display: inline-block; filter: grayscale(1) sepia(1) hue-rotate(188deg) saturate(3.4) brightness(0.9); }
-:root[data-theme="dark"] .emo { filter: grayscale(1) sepia(1) hue-rotate(188deg) saturate(3) brightness(1.35); }
-.wcard .emo { filter: none; }
+/* icons (Phosphor duotone): they take the text colour; in icon tiles they are theme blue */
+.ico { width: 1.2em; height: 1.2em; flex-shrink: 0; vertical-align: -0.22em; }
+.tx-icon .ico, .cat-icon .ico, .cat-tile-icon .ico, .bring-icon .ico, .empty-icon .ico { color: var(--accent-text); }
+.tx-icon .ico, .cat-icon .ico { width: 22px; height: 22px; }
+.bring-icon .ico { position: static; inset: auto; width: 25px; height: 25px; transform: none; fill: currentColor; stroke: none; }
+.cat-tile-icon .ico { width: 27px; height: 27px; }
+.empty-icon .ico { width: 44px; height: 44px; }
+.cat-tile.active .cat-tile-icon .ico { color: inherit; }
+.chip .ico { width: 1.1em; height: 1.1em; margin-right: 1px; }
+
 .icon-btn {
   width: 40px;
   height: 40px;
@@ -392,6 +398,10 @@ button.wcard:active { transform: scale(0.98); }
 .wcard-title { min-width: 0; max-width: 62%; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
 .wcard-kicker { flex-shrink: 0; font-size: 14px; font-weight: 500; opacity: 0.92; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
 .wcard-contactless { position: absolute; right: 18px; top: 50%; width: 26px; height: 26px; margin-top: -14px; opacity: 0.9; }
+.wcard-foot { align-items: flex-end; }
+.wcard-foot-left { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.wcard-valid { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; opacity: 0.92; white-space: nowrap; }
+.wcard-valid small { margin-right: 5px; font-size: 7.5px; font-weight: 600; letter-spacing: 0.08em; opacity: 0.85; }
 .net-logo { width: 46px; height: 29px; flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18)); }
 .wcard-mid { display: flex; flex-direction: column; }
 .wcard-caption { font-size: 11px; font-weight: 500; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.06em; }
@@ -406,6 +416,10 @@ button.wcard:active { transform: scale(0.98); }
 }
 .is-light .wcard-title, .is-light .wcard-kicker, .is-light .wcard-amount { text-shadow: none; }
 .is-light .net-logo { filter: none; }
+.chip-logo { width: 42px; height: 31px; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25)); }
+.valid-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.valid-row select { flex: 1; min-width: 0; height: 46px; padding: 0 12px; border-radius: 13px; border: 0; background: var(--input); color: var(--text); font-size: 16px; box-shadow: inset 0 0 0 1px var(--edge); }
+.valid-slash { font-size: 20px; color: var(--muted); }
 .is-light::after { opacity: 0.35; }
 .is-light.pattern-orbs::before {
   background:
