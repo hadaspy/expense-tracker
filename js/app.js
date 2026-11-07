@@ -19,7 +19,7 @@ import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion, walletIcon } from './ui.js';
 
-const APP_VERSION = '4.3.0';
+const APP_VERSION = '4.4.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -338,6 +338,40 @@ async function removeWallet(name) {
   } catch (error) {
     alert(error.message);
   }
+}
+
+async function saveWalletEdit(oldName, { name, type }) {
+  let patch;
+  if (isDemo) {
+    const swap = (v) => (v === oldName ? name : v);
+    patch = {
+      wallets: state.data.wallets.map((w) => (w.name === oldName ? { ...w, name, type } : w)),
+      transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
+      recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
+      goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
+    };
+  } else {
+    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type })).wallets;
+    const swap = (v) => (v === oldName ? name : v);
+    patch = {
+      wallets,
+      transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
+      recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
+      goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
+    };
+  }
+  if (state.view?.wallet === oldName) {
+    state.view = { wallet: name };
+    history.replaceState({ view: state.view }, '');
+  }
+  setData(patch);
+  toast('Wallet updated');
+}
+
+function openEditWallet(name) {
+  const wallet = (state.data.wallets || []).find((w) => w.name === name);
+  if (!wallet) return;
+  openWalletSheet({ existing: state.data.wallets.map((w) => w.name), wallet, onSave: (values) => saveWalletEdit(name, values) });
 }
 
 // ---------- recurring ----------
@@ -1373,6 +1407,7 @@ function menuItems() {
     if (!(state.data.wallets || []).some((w) => w.name === wallet)) return [];
     const attrs = `data-name="${esc(wallet)}"`;
     return [
+      ['edit-wallet', attrs, icon('pencil-simple'), 'Edit wallet'],
       ['adjust-balance', attrs, ICONS.refresh, 'Adjust balance'],
       ['customize-card', attrs, ICONS.palette, 'Customize card'],
       ['remove-wallet', attrs, ICONS.trash, 'Remove wallet', true],
@@ -1625,6 +1660,8 @@ app.addEventListener('click', async (event) => {
     openFilters();
   } else if (action === 'dot') {
     showCard(Number(target.dataset.i));
+  } else if (action === 'edit-wallet') {
+    openEditWallet(target.dataset.name);
   } else if (action === 'add-wallet') {
     openNewWallet();
   } else if (action === 'remove-wallet') {

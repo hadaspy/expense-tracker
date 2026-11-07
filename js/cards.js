@@ -83,7 +83,7 @@ export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', st
       <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-title">${esc(title)}</span></span>
       ${CONTACTLESS}
       <span class="wcard-mid"><span class="wcard-caption">${esc(caption)}</span><span class="wcard-amount">${amountHtml}</span></span>
-      <span class="wcard-foot"><span class="wcard-foot-left"><span class="wcard-label">${footHtml}</span>${style.valid ? `<span class="wcard-valid"><small>VALID THRU</small>${esc(style.valid)}</span>` : ''}</span>${NETWORKS[style.scheme || '']}</span>
+      <span class="wcard-foot"><span class="wcard-foot-left"><span class="wcard-label">${footHtml}</span>${style.valid ? `<span class="wcard-valid"><small>VALID<br>THRU</small><span>${esc(style.valid)}</span></span>` : ''}</span>${NETWORKS[style.scheme || '']}</span>
     </${tag}>`;
 }
 

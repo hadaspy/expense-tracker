@@ -399,9 +399,9 @@ button.wcard:active { transform: scale(0.98); }
 .wcard-kicker { flex-shrink: 0; font-size: 14px; font-weight: 500; opacity: 0.92; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
 .wcard-contactless { position: absolute; right: 18px; top: 50%; width: 26px; height: 26px; margin-top: -14px; opacity: 0.9; }
 .wcard-foot { align-items: flex-end; }
-.wcard-foot-left { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.wcard-valid { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; opacity: 0.92; white-space: nowrap; }
-.wcard-valid small { margin-right: 5px; font-size: 7.5px; font-weight: 600; letter-spacing: 0.08em; opacity: 0.85; }
+.wcard-foot-left { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.wcard-valid { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; font-size: 12.5px; font-weight: 500; letter-spacing: 0.05em; opacity: 0.95; white-space: nowrap; }
+.wcard-valid small { font-size: 6.5px; line-height: 1.15; font-weight: 600; letter-spacing: 0.08em; text-align: left; opacity: 0.85; }
 .net-logo { width: 46px; height: 29px; flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18)); }
 .wcard-mid { display: flex; flex-direction: column; }
 .wcard-caption { font-size: 11px; font-weight: 500; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.06em; }

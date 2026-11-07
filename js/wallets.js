@@ -13,8 +13,9 @@ const grouped = (n) => (n === null ? '' : formatNumber(n));
  * @param {string[]} o.existing  names already in use (case-insensitive check)
  * @param {Function} o.onSave    async ({name, type, openingBalance}) => void
  */
-export function openWalletSheet({ existing = [], onSave }) {
-  const state = { name: '', type: 'Bank', amount: null, owe: false };
+export function openWalletSheet({ existing = [], wallet = null, onSave }) {
+  const editing = !!wallet;
+  const state = { name: wallet?.name || '', type: wallet?.type || 'Bank', amount: null, owe: false };
   let busy = false;
   let error = '';
 
@@ -36,7 +37,7 @@ export function openWalletSheet({ existing = [], onSave }) {
       <div class="sheet-grabber"></div>
       <header class="sheet-head">
         <button type="button" class="link" data-act="cancel">Cancel</button>
-        <h2>New wallet</h2>
+        <h2>${editing ? 'Edit wallet' : 'New wallet'}</h2>
         <span></span>
       </header>
       <div class="sheet-body">
@@ -48,17 +49,17 @@ export function openWalletSheet({ existing = [], onSave }) {
         <div class="chip-row wrap">
           ${WALLET_TYPES.map((t) => `<button type="button" class="chip ${state.type === t ? 'active' : ''}" data-act="type" data-v="${esc(t)}" aria-pressed="${state.type === t}">${walletIcon(t)} ${esc(t)}</button>`).join('')}
         </div>
-        <p class="field-label">What does it hold today?</p>
+        ${editing ? `<p class="muted small field-help">Renaming updates all its transactions, recurring items and goals. To change what it holds, use Adjust balance.</p>` : `        <p class="field-label">What does it hold today?</p>
         <div class="segmented two balance-sign" role="radiogroup" aria-label="Balance kind">
           <button type="button" class="seg ${state.owe ? '' : 'active'}" data-act="sign" data-v="have" role="radio" aria-checked="${!state.owe}">I have</button>
           <button type="button" class="seg ${state.owe ? 'active' : ''}" data-act="sign" data-v="owe" role="radio" aria-checked="${state.owe}">I owe</button>
         </div>
         <input class="note-input big-input center" data-f="amount" inputmode="numeric" placeholder="0" value="${esc(grouped(state.amount))}" aria-label="Opening balance">
-        <p class="muted small field-help">This is the starting balance. After that, every transaction moves it. You can fix it any time with Adjust balance, and style the card afterwards.</p>
+        <p class="muted small field-help">This is the starting balance. After that, every transaction moves it. You can fix it any time with Adjust balance, and style the card afterwards.</p>`}
       </div>
       <div class="sheet-foot">
         ${error ? `<p class="form-status error" role="alert">${esc(error)}</p>` : ''}
-        <button type="button" class="btn-primary save" data-act="save" ${busy ? 'disabled' : ''}>${busy ? 'Adding…' : 'Add wallet'}</button>
+        <button type="button" class="btn-primary save" data-act="save" ${busy ? 'disabled' : ''}>${busy ? (editing ? 'Saving…' : 'Adding…') : editing ? 'Save changes' : 'Add wallet'}</button>
       </div>`;
   }
 
@@ -76,12 +77,12 @@ export function openWalletSheet({ existing = [], onSave }) {
     else if (act === 'save') {
       const name = state.name.replace(/\s+/g, ' ').trim();
       if (!name) { error = 'Give the wallet a name.'; render(); return; }
-      if (existing.some((n) => n.toLowerCase() === name.toLowerCase())) { error = `You already have a wallet called “${name}”.`; render(); return; }
+      if (existing.some((n) => n.toLowerCase() === name.toLowerCase() && n !== wallet?.name)) { error = `You already have a wallet called “${name}”.`; render(); return; }
       busy = true;
       error = '';
       render();
       try {
-        await onSave({ name, type: state.type, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
+        await onSave(editing ? { name, type: state.type } : { name, type: state.type, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
         close();
       } catch (e) {
         busy = false;
