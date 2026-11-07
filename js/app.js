@@ -19,7 +19,7 @@ import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion, walletIcon } from './ui.js';
 
-const APP_VERSION = '4.4.1';
+const APP_VERSION = '4.5.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -170,32 +170,54 @@ function setData(patch) {
 }
 const applyLocal = (change) => setData({ transactions: change([...(state.data.transactions || [])]) });
 
+/**
+ * Saving is optimistic: the change shows up and the sheet closes straight away, and the request to Google
+ * (which takes a second or two) finishes in the background. If it fails, the change is undone with a message.
+ * A new entry has a temporary negative ID until Google answers with the real one.
+ */
 async function saveTransaction(transaction, id = null) {
   if (id) {
-    if (!isDemo) await apiPost({ action: 'update', id, transaction });
+    const previous = (state.data.transactions || []).find((t) => t.id === id);
     applyLocal((list) => list.map((t) => (t.id === id ? { id, ...transaction } : t)));
     toast(`Updated #${id}`);
-  } else {
-    const newId = isDemo
-      ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1
-      : (await apiPost({ action: 'add', transaction })).id;
-    applyLocal((list) => [...list, { id: newId, ...transaction }]);
-    toast(`Saved #${newId}`);
+    if (!isDemo) {
+      apiPost({ action: 'update', id, transaction }).catch((error) => {
+        if (previous) applyLocal((list) => list.map((t) => (t.id === id ? previous : t)));
+        toast(`Couldn't update: ${error.message}`);
+      });
+    }
+    return;
   }
-  refresh(); // sync in the background (e.g. entries added from Telegram meanwhile)
+  const temp = isDemo ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1 : -Date.now();
+  applyLocal((list) => [...list, { id: temp, ...transaction }]);
+  if (isDemo) { toast(`Saved #${temp}`); return; }
+  toast('Saving…');
+  apiPost({ action: 'add', transaction }).then((result) => {
+    applyLocal((list) => list.map((t) => (t.id === temp ? { ...t, id: result.id } : t)));
+    toast(`Saved #${result.id}`);
+  }).catch((error) => {
+    applyLocal((list) => list.filter((t) => t.id !== temp));
+    toast(`Not saved: ${error.message}`);
+  });
 }
 
 async function deleteTransaction(id) {
-  if (!isDemo) await apiPost({ action: 'delete', id });
+  const previous = (state.data.transactions || []).find((t) => t.id === id);
   applyLocal((list) => list.filter((t) => t.id !== id));
   toast(`Deleted #${id}`);
-  refresh();
+  if (!isDemo) {
+    apiPost({ action: 'delete', id }).catch((error) => {
+      if (previous) applyLocal((list) => [...list, previous]);
+      toast(`Couldn't delete: ${error.message}`);
+    });
+  }
 }
 
 function openEntry(id = null) {
   if (!state.data) return;
   const tx = id ? (state.data.transactions || []).find((t) => t.id === id) : null;
   if (id && !tx) return;
+  if (id && id < 0) { toast('Still saving, one moment…'); return; }
   openEntrySheet({
     data: state.data,
     money,
@@ -684,7 +706,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
         </span>
         <span class="tx-side">
           <span class="amount ${cls}">${sign}${esc(money(tx.amount))}</span>
-          <span class="tx-time">#${tx.id} · ${time}</span>
+          <span class="tx-time">${tx.id < 0 ? 'Saving…' : `#${tx.id}`} · ${time}</span>
         </span>
       </div>
     </li>`;
@@ -1617,6 +1639,7 @@ app.addEventListener('click', async (event) => {
     openEntry(Number(target.dataset.id));
   } else if (action === 'delete-tx') {
     const id = Number(target.dataset.id);
+    if (id < 0) { toast('Still saving, one moment…'); closeSwipes(); return; }
     if (!confirm(`Delete transaction #${id}? This removes it from your sheet.`)) { closeSwipes(); return; }
     target.disabled = true;
     try {
