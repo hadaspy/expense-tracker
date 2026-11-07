@@ -26,14 +26,19 @@ const isoDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDa
  * @param {object} [options.tx]       existing transaction → edit mode
  * @param {Function} options.onSave   async (transaction) => void; throw to show an error
  * @param {Function} [options.onDelete] async (id) => void
+ * @param {object} [options.recurring] {frequency} → the same form becomes "New recurring": the date is the first/next
+ *                                     one (it may be in the future), a Repeat row is added, and the saved object also
+ *                                     carries `frequency` and `nextDate`.
  */
-export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, onDelete }) {
+export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, onDelete, recurring = null }) {
   const last = loadLast();
   const wallets = (data.wallets || []).map((w) => w.name);
   const walletTypes = Object.fromEntries((data.wallets || []).map((w) => [w.name, w.type]));
   const now = new Date();
   const today = isoDay(now);
   const yesterday = isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  const tomorrow = isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  let frequency = recurring?.frequency || 'monthly';
   const categoriesFor = (type) => (data.categories && data.categories[type]) || {};
 
   const state = tx
@@ -50,7 +55,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
     : {
         type: EXPENSE, amount: '', category: '', subcategory: '',
         wallet: wallets.includes(last[EXPENSE]) ? last[EXPENSE] : wallets[0] || '',
-        toWallet: '', day: today, note: '',
+        toWallet: '', day: recurring ? tomorrow : today, note: '',
       };
   let busy = false;
   let error = '';
@@ -133,6 +138,23 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   }
 
   function dateSection() {
+    if (recurring) {
+      const label = new Date(`${state.day}T12:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      const custom = state.day !== today && state.day !== tomorrow;
+      return `
+        <p class="field-label">Repeat</p>
+        <div class="chip-row">${[['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']]
+          .map(([v, name]) => chip(name, 'frequency', v, frequency === v)).join('')}</div>
+        <p class="field-label">${tx ? 'Next date' : 'First date'}</p>
+        <div class="chip-row">
+          ${chip('Today', 'day', today, state.day === today)}
+          ${chip('Tomorrow', 'day', tomorrow, state.day === tomorrow)}
+          <label class="chip date-chip ${custom ? 'active' : ''}">📅 ${esc(custom ? label : 'Pick date')}
+            <input type="date" data-field="day" value="${esc(state.day)}" aria-label="Pick a date">
+          </label>
+        </div>
+        <p class="muted small field-help">A date in the past or today is added to your transactions right away; later ones are added on the day. ${frequency === 'monthly' || frequency === 'yearly' ? 'Short months use their last day.' : ''}</p>`;
+    }
     const custom = state.day !== today && state.day !== yesterday;
     const customLabel = custom
       ? new Date(`${state.day}T12:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -162,7 +184,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       <div class="sheet-grabber"></div>
       <header class="sheet-head">
         <button type="button" class="link" data-act="cancel">Cancel</button>
-        <h2>${tx ? `Edit #${tx.id}` : 'New entry'}</h2>
+        <h2>${recurring ? (tx ? 'Edit recurring' : 'New recurring') : tx ? `Edit #${tx.id}` : 'New entry'}</h2>
         <span class="sheet-head-spacer"></span>
       </header>
       <div class="segmented" role="tablist">
@@ -176,7 +198,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
         ${dateSection()}
         <p class="field-label">Note</p>
         <input class="note-input" data-field="note" placeholder="Optional" maxlength="200" value="${esc(state.note)}" enterkeyhint="done">
-        ${tx && onDelete ? `<button type="button" class="btn-danger" data-act="delete">${ICONS.trash} Delete transaction</button>` : ''}
+        ${tx && onDelete ? `<button type="button" class="btn-danger" data-act="delete">${ICONS.trash} ${recurring ? 'Delete recurring item' : 'Delete transaction'}</button>` : ''}
       </div>
       <div class="sheet-foot">
         ${error ? `<p class="form-status error" role="alert">${esc(error)}</p>` : ''}
@@ -220,6 +242,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       note: state.note.trim(),
       date: dateText(),
     };
+    if (recurring) Object.assign(transaction, { frequency, nextDate: state.day });
     try {
       await onSave(transaction);
       if (state.type === TRANSFER) Object.assign(last, { transferFrom: state.wallet, transferTo: state.toWallet });
@@ -234,7 +257,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   }
 
   async function remove() {
-    if (!confirm(`Delete transaction #${tx.id}? This removes it from your sheet.`)) return;
+    if (!confirm(recurring ? 'Delete this recurring item? Transactions it already added stay.' : `Delete transaction #${tx.id}? This removes it from your sheet.`)) return;
     busy = true;
     render();
     try {
@@ -279,6 +302,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       render();
     } else if (act === 'toWallet') { state.toWallet = v; error = ''; render(); }
     else if (act === 'day') { state.day = v; render(); }
+    else if (act === 'frequency') { frequency = v; render(); }
   });
 
   backdrop.addEventListener('input', (event) => {
@@ -287,7 +311,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   backdrop.addEventListener('change', (event) => {
     if (event.target.dataset.field === 'day') {
       const value = event.target.value;
-      state.day = value && value <= today ? value : today;
+      state.day = value && (recurring || value <= today) ? value : today;
       render();
     }
   });

@@ -1,7 +1,7 @@
 {
-  "name": "Expense Tracker",
-  "short_name": "Expenses",
-  "description": "Personal expense tracker connected to Google Sheets",
+  "name": "WhatTheFund",
+  "short_name": "WhatTheFund",
+  "description": "Your money, on your own Google Sheet",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

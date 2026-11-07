@@ -1,10 +1,11 @@
-// Expense Tracker web app — reads and writes your Google Sheet through the Apps Script API.
+// WhatTheFund web app — reads and writes your Google Sheet through the Apps Script API.
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
-  EMPTY_FILTERS, EXPENSE, INCOME, RANGES, TRANSFER,
+  EMPTY_FILTERS, EXPENSE, FREQUENCY_NAMES, INCOME, RANGES, TRANSFER,
   activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatMoney,
-  goalProgress, groupWallets, inMonth, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
-  prepareTransactions, rangeBounds, spendingParts, summarize, timeAgo, toCsv, walletBalances, walletFlow, walletIcon,
+  goalProgress, groupWallets, inMonth, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
+  occurrences, periodBounds, periodOf, periodRange, prepareTransactions, rangeBounds, setPayCycle, spendingParts, summarize,
+  timeAgo, toCsv, walletBalances, walletFlow, walletIcon,
 } from './calc.js';
 import { openBalanceSheet } from './balance.js';
 import { openBudgetSheet } from './budgets.js';
@@ -14,13 +15,16 @@ import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
 import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
+import { openPaydaySheet } from './payday.js';
+import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
 
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '4.0.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
-const TABS = ['home', 'transactions', 'budgets', 'reports'];
-const TAB_TITLES = { home: 'Home', transactions: 'Transactions', budgets: 'Plan', reports: 'Reports' };
+const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
+const TAB_TITLES = { home: 'Home', wallets: 'Wallets', budgets: 'Budgets', reports: 'Reports', more: 'More' };
+const VIEW_TITLES = { settings: 'Settings', transactions: 'Transactions', recurring: 'Recurring' };
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 
@@ -47,7 +51,7 @@ const freshFilters = () => ({ ...EMPTY_FILTERS, wallets: [], categories: [] });
 const state = {
   tab: 'home',
   plan: 'budgets',            // Plan tab: 'budgets' | 'goals'
-  view: null,                 // null | 'settings' | { wallet: name }
+  view: null,                 // null | 'settings' | 'transactions' | 'recurring' | { wallet: name }
   month: { year: today.getFullYear(), month: today.getMonth() },
   filters: freshFilters(),    // Transactions: type chips + the Filters sheet
   search: '',
@@ -59,6 +63,11 @@ const state = {
   error: null,
   animate: true,              // play the entrance animation on the next render (navigation only)
 };
+
+// The pay cycle (day your month starts) lives in the sheet, so the Telegram bot shares it
+const syncCycle = () => setPayCycle(state.data?.settings || {});
+syncCycle();
+state.month = periodOf(today);
 
 const decimals = () => Number(settings.decimals) || 0;
 const currency = () => settings.currency || (isDemo ? 'Rp' : '');
@@ -135,7 +144,10 @@ async function refresh() {
   renderHeader();
   try {
     const data = await apiGet('data');
+    const cycleChanged = JSON.stringify(data.settings) !== JSON.stringify(state.data?.settings);
     state.data = data;
+    syncCycle();
+    if (cycleChanged) state.month = periodOf(new Date());
     state.fetchedAt = Date.now();
     storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
   } catch (error) {
@@ -151,6 +163,7 @@ async function refresh() {
 /** Applies a change to the local copy right away, so the app updates without waiting for a reload. */
 function setData(patch) {
   state.data = { ...state.data, ...patch };
+  if (patch.settings) { syncCycle(); state.month = periodOf(new Date()); }
   if (!isDemo) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
   render();
 }
@@ -201,8 +214,8 @@ async function saveBudgets(budgets) {
 function openBudgets() {
   if (!state.data) return;
   const { txs } = computed();
-  const now = new Date();
-  const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const current = periodOf(new Date());
+  const last = new Date(current.year, current.month - 1, 1);
   const lastMonth = Object.fromEntries(
     byCategory(inMonth(txs, last.getFullYear(), last.getMonth()), EXPENSE).map((c) => [c.category, c.total]),
   );
@@ -277,6 +290,127 @@ function openBalance(name) {
   openBalanceSheet({ wallet: name, type: wallet.type, current: computed().balances.get(name) || 0, money, onSave: (b) => saveBalance(name, b) });
 }
 
+// ---------- wallets: add / remove ----------
+
+async function addWallet(wallet) {
+  const clean = { ...wallet, card: '' };
+  const wallets = isDemo ? [...(state.data.wallets || []), clean] : (await apiPost({ action: 'addWallet', wallet })).wallets;
+  setData({ wallets });
+  toast(`${wallet.name} added`);
+}
+
+function openNewWallet() {
+  if (!state.data) return;
+  openWalletSheet({ existing: (state.data.wallets || []).map((w) => w.name), onSave: addWallet });
+}
+
+async function removeWallet(name) {
+  const used = (state.data.transactions || []).filter((t) => t.wallet === name || t.toWallet === name).length;
+  const linked = (state.data.goals || []).find((g) => g.wallet === name);
+  const scheduled = recurringItems().some((r) => r.wallet === name || r.toWallet === name);
+  if (used) { alert(`“${name}” still has ${used} transaction${used === 1 ? '' : 's'}. Delete them, or edit them to use another wallet, before removing it.`); return; }
+  if (scheduled) { alert(`A recurring item still uses “${name}”. Change or delete it first.`); return; }
+  if (linked) { alert(`The goal “${linked.name}” follows “${name}”. Change the goal first.`); return; }
+  if (!confirm(`Remove the wallet “${name}”? It has no transactions, so no history is lost.`)) return;
+  try {
+    const wallets = isDemo ? state.data.wallets.filter((w) => w.name !== name) : (await apiPost({ action: 'deleteWallet', name })).wallets;
+    state.view = null;
+    history.back();
+    setData({ wallets });
+    toast(`${name} removed`);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+// ---------- recurring ----------
+
+const recurringItems = () => state.data?.recurring || [];
+
+async function saveRecurring(transaction, id = null) {
+  const item = { ...transaction, id: id || undefined, active: transaction.active !== false };
+  delete item.date;
+  let recurring;
+  let created = 0;
+  if (isDemo) {
+    const list = [...recurringItems()];
+    const at = list.findIndex((r) => r.id === id);
+    const full = { ...item, day: Number(item.nextDate.slice(8, 10)), id: id || Math.max(0, ...list.map((r) => r.id)) + 1 };
+    if (at === -1) list.push(full); else list[at] = full;
+    recurring = list;
+  } else {
+    const result = await apiPost({ action: 'setRecurring', item });
+    recurring = result.recurring;
+    created = result.created;
+  }
+  setData({ recurring });
+  toast(created ? `Saved · ${created} added to your transactions` : 'Recurring saved');
+  if (created) refresh();
+}
+
+async function deleteRecurring(id) {
+  const recurring = isDemo ? recurringItems().filter((r) => r.id !== id) : (await apiPost({ action: 'deleteRecurring', id })).recurring;
+  setData({ recurring });
+  toast('Recurring item deleted');
+}
+
+async function toggleRecurring(id) {
+  const item = recurringItems().find((r) => r.id === id);
+  if (!item) return;
+  await saveRecurring({ ...item, active: !item.active }, id);
+  toast(item.active ? 'Paused' : 'Resumed');
+}
+
+function openRecurring(id = null) {
+  if (!state.data) return;
+  const item = id ? recurringItems().find((r) => r.id === id) : null;
+  if (id && !item) return;
+  openEntrySheet({
+    data: state.data,
+    money,
+    decimals: decimals(),
+    tx: item ? { ...item, date: `${item.nextDate} 09:00` } : null,
+    recurring: { frequency: item?.frequency || 'monthly' },
+    onSave: (transaction) => saveRecurring({ ...transaction, active: item ? item.active : true }, item ? item.id : null),
+    onDelete: item ? (rid) => deleteRecurring(rid) : null,
+  });
+}
+
+// ---------- pay cycle ----------
+
+async function saveCycle(values) {
+  const saved = isDemo ? values : (await apiPost({ action: 'setSettings', ...values })).settings;
+  setData({ settings: saved });
+  toast('Pay cycle saved');
+}
+
+function openCycle() {
+  if (!state.data) return;
+  const settingsNow = state.data.settings || { payday: 1, paydayWeekdays: false };
+  openPaydaySheet({
+    settings: settingsNow,
+    preview: (payday, paydayWeekdays) => {
+      setPayCycle({ payday, paydayWeekdays }); // try the choice, then put the saved one back
+      const now = new Date();
+      const { year, month } = periodOf(now);
+      const { start, end } = periodBounds(year, month);
+      const result = {
+        current: periodRange(year, month),
+        next: end.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
+        start,
+      };
+      syncCycle();
+      return result;
+    },
+    onSave: saveCycle,
+  });
+}
+
+const cycleSummary = () => {
+  const s = state.data?.settings || { payday: 1, paydayWeekdays: false };
+  return s.payday === 1 && !s.paydayWeekdays ? 'Calendar month' : `Starts on day ${s.payday}${s.paydayWeekdays ? ' · weekdays only' : ''}`;
+};
+
 const findGoal = (name) => (state.data.goals || []).find((g) => g.name === name);
 
 function openGoal(name = null) {
@@ -321,40 +455,156 @@ function cardMoney(value) {
   return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num">${esc(formatMoney(Math.abs(value), { decimals: decimals() }))}</span>`;
 }
 
-/** The swipeable wallet cards on Home: "All accounts" first, then every wallet in sheet order. */
+/** Income (+, green) or spending (−, red) with a round icon, used wherever money in/out is shown. */
+function flowStat(sign, label, html) {
+  const plus = sign === '+';
+  return `
+    <div class="flow-stat">
+      <span class="flow-ico ${plus ? 'pos' : 'neg'}" aria-hidden="true">${plus ? ICONS.plus : ICONS.minus}</span>
+      <span class="flow-body"><span class="overline">${label}</span><strong class="${plus ? 'pos' : 'neg'}">${html}</strong></span>
+    </div>`;
+}
+
+let carouselIndex = 0; // which card is centred (0 = All accounts); kept when the screen redraws
+
+/**
+ * The wallet cards on Home: "All accounts" then every wallet, as an endless swipe (the strip holds a few
+ * copies and jumps back to the middle one when you stop), with a dot for each card.
+ */
 function walletCards() {
   const { balances } = computed();
   const wallets = state.data.wallets || [];
   const worth = netWorth(balances);
-  const total = cardHtml({
+  const specs = [{
     title: 'All accounts',
     kicker: `${wallets.length} wallet${wallets.length === 1 ? '' : 's'}`,
     caption: 'Net worth',
     amountHtml: bigMoney(worth.net),
     footHtml: `Assets ${esc(money(worth.assets))} · Debts ${esc(money(worth.debts))}`,
     style: { colour: 'midnight', pattern: 'glass' },
-    attrs: 'data-action="scroll" data-target="accounts" aria-label="All accounts: see the list"',
+    action: 'data-action="tab" data-tab="wallets"',
+    label: 'All accounts: open the wallet list',
     negative: worth.net < 0,
-  });
-  const cards = wallets.map((w) => {
+  }];
+  for (const w of wallets) {
     const balance = balances.get(w.name) || 0;
     const style = parseCard(w.card, w.type);
-    return cardHtml({
+    specs.push({
       title: w.name,
       kicker: `${walletIcon(w.type)} ${w.type || 'Other'}`,
       caption: balance < 0 ? 'Owed' : 'Balance',
       amountHtml: bigMoney(balance),
       footHtml: esc(style.label),
       style,
-      attrs: `data-action="wallet" data-name="${esc(w.name)}" aria-label="${esc(w.name)}: ${esc(money(balance))}"`,
+      action: `data-action="wallet" data-name="${esc(w.name)}"`,
+      label: `${w.name}: ${money(balance)}`,
       negative: balance < 0,
     });
-  });
+  }
+  const n = specs.length;
+  const copies = n < 2 ? 1 : n >= 5 ? 3 : 5; // few cards → more copies, so a long fling can't reach the end
+  const html = [];
+  for (let c = 0; c < copies; c++) {
+    const real = copies === 1 || c === Math.floor(copies / 2);
+    specs.forEach((spec, i) => {
+      html.push(cardHtml({
+        ...spec,
+        attrs: `${spec.action} data-i="${i}" ${real ? `aria-label="${esc(spec.label)}"` : 'aria-hidden="true" tabindex="-1"'}`,
+      }));
+    });
+  }
+  const dots = n > 1
+    ? `<div class="dots" role="group" aria-label="Choose a card">${specs.map((spec, i) => `<button type="button" class="dot ${i === carouselIndex % n ? 'active' : ''}" data-action="dot" data-i="${i}" aria-label="Show ${esc(spec.title)}"></button>`).join('')}</div>`
+    : '';
   return `
     <section class="wcards-wrap" aria-label="Wallets">
-      <div class="wcards">${total}${cards.join('')}</div>
-      <p class="wcards-hint">Swipe for your wallets · tap one to open or customize it</p>
+      <div class="wcards" data-n="${n}" data-copies="${copies}">${html.join('')}</div>
+      ${dots}
     </section>`;
+}
+
+/** Where card 0 of the first copy would be centred (`base`) and the distance between two cards (`step`). */
+function carouselGeometry(strip) {
+  const [first, second] = strip.children;
+  return {
+    step: second ? second.offsetLeft - first.offsetLeft : first.offsetWidth,
+    base: first.offsetLeft - (strip.clientWidth - first.offsetWidth) / 2,
+  };
+}
+
+/** Starts the strip in the middle copy, tracks the centred card for the dots, and wraps around when scrolling stops. */
+function setupCarousel() {
+  const strip = app.querySelector('.wcards');
+  const n = Number(strip?.dataset.n);
+  if (!strip || n < 2) return;
+  const mid = Math.floor(Number(strip.dataset.copies) / 2);
+  const dots = [...app.querySelectorAll('.dots .dot')];
+  const { step, base } = carouselGeometry(strip);
+  const go = (i) => { strip.scrollLeft = base + i * step; };
+  const index = () => Math.round((strip.scrollLeft - base) / step);
+  const wrap = (i) => ((i % n) + n) % n;
+
+  strip.style.scrollSnapType = 'none';
+  go(mid * n + wrap(carouselIndex));
+  requestAnimationFrame(() => { strip.style.scrollSnapType = ''; });
+
+  let timer = 0;
+  let touching = false;
+  const settle = () => {
+    if (touching) return;
+    const i = index();
+    const home = mid * n + wrap(i);
+    if (home === i) return;
+    strip.style.scrollSnapType = 'none'; // same picture, different copy: the jump is invisible
+    go(home);
+    requestAnimationFrame(() => { strip.style.scrollSnapType = ''; });
+  };
+  strip.addEventListener('scroll', () => {
+    carouselIndex = wrap(index());
+    dots.forEach((dot, k) => dot.classList.toggle('active', k === carouselIndex));
+    clearTimeout(timer);
+    timer = setTimeout(settle, 140);
+  }, { passive: true });
+  strip.addEventListener('touchstart', () => { touching = true; }, { passive: true });
+  strip.addEventListener('touchend', () => { touching = false; clearTimeout(timer); timer = setTimeout(settle, 220); }, { passive: true });
+}
+
+/** Tapping a dot scrolls to that card by the shortest way round. */
+function showCard(target) {
+  const strip = app.querySelector('.wcards');
+  const n = Number(strip?.dataset.n);
+  if (!strip || n < 2) return;
+  const { step, base } = carouselGeometry(strip);
+  const i = Math.round((strip.scrollLeft - base) / step);
+  const forward = (target - (((i % n) + n) % n) + n) % n;
+  const delta = forward > n / 2 ? forward - n : forward;
+  strip.scrollTo({ left: base + (i + delta) * step, behavior: reducedMotion() ? 'auto' : 'smooth' });
+}
+
+/** Budget circles at the top of Home: one ring per budget (or the biggest spending categories until you set budgets). */
+function budgetRings(plan, monthTxs) {
+  const rings = plan.budgets.length
+    ? [...plan.budgets].sort((a, b) => b.fraction - a.fraction).map((b) => ({ name: b.category, fraction: b.fraction, cls: budgetClass(b.fraction) }))
+    : byCategory(monthTxs, EXPENSE).slice(0, 6).map((c) => ({ name: c.category, fraction: c.share, cls: 'accent' }));
+  const items = rings.map((r) => {
+    const pct = Math.round(r.fraction * 100);
+    const fill = Math.max(0, Math.min(100, pct));
+    return `
+      <button class="bring" data-action="plan" data-plan="budgets" aria-label="${esc(r.name)}: ${pct}%${plan.budgets.length ? ' of budget' : ' of spending'}">
+        <span class="bring-ring ${r.cls}">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="bring-track" cx="32" cy="32" r="29" pathLength="100"/><circle class="bring-fill" cx="32" cy="32" r="29" pathLength="100" stroke-dasharray="100" stroke-dashoffset="${100 - fill}"/></svg>
+          <span class="bring-icon">${categoryIcon(r.name)}</span>
+        </span>
+        <span class="bring-name">${esc(r.name)}</span>
+        <span class="bring-pct ${r.cls}">${pct}%</span>
+      </button>`;
+  });
+  items.push(`
+      <button class="bring bring-add" data-action="edit-budgets" aria-label="${plan.budgets.length ? 'Edit budgets' : 'Set budgets'}">
+        <span class="bring-ring"><span class="bring-icon">${ICONS.plus}</span></span>
+        <span class="bring-name">${plan.budgets.length ? 'Budgets' : 'Set budgets'}</span>
+      </button>`);
+  return `<section class="brings" aria-label="Budgets">${items.join('')}</section>`;
 }
 
 /** "Left to spend" as a regular card (Home): the wallet cards are the headline now. */
@@ -456,12 +706,12 @@ function budgetRow(b, daysLeft) {
 
 function monthNav() {
   const { year, month } = state.month;
-  const now = new Date();
-  const atCurrent = year > now.getFullYear() || (year === now.getFullYear() && month >= now.getMonth());
+  const current = periodOf(new Date());
+  const atCurrent = year > current.year || (year === current.year && month >= current.month);
   return `
     <div class="month-nav">
       <button class="icon-btn" data-action="month" data-delta="-1" aria-label="Previous month">${ICONS.left}</button>
-      <h2>${esc(monthLabel(year, month))}</h2>
+      <h2>${esc(monthLabel(year, month))}${isCustomCycle() ? `<small>${esc(periodRange(year, month))}</small>` : ''}</h2>
       <button class="icon-btn" data-action="month" data-delta="1" aria-label="Next month" ${atCurrent ? 'disabled' : ''}>${ICONS.right}</button>
     </div>`;
 }
@@ -489,8 +739,8 @@ function planHero(plan, monthName, { split = true } = {}) {
       ${perDay ? `<p class="hero-perday">${perDay}</p>` : ''}
       ${split ? `
       <div class="hero-split">
-        <div><span class="overline">Money in</span><strong class="pos">${nb(plan.income)}</strong></div>
-        <div><span class="overline">Money out</span><strong>${nb(plan.expense)}</strong></div>
+        ${flowStat('+', 'Money in', nb(plan.income))}
+        ${flowStat('−', 'Money out', nb(plan.expense))}
       </div>` : ''}
     </section>`;
 }
@@ -525,18 +775,13 @@ const goalsWithProgress = () => {
 // ---------- screens ----------
 
 function renderHome() {
-  const { txs, balances } = computed();
+  const { txs } = computed();
   const now = new Date();
-  const monthTxs = inMonth(txs, now.getFullYear(), now.getMonth());
-  const plan = monthPlan(state.data.budgets, monthTxs, now.getFullYear(), now.getMonth(), now);
-  const insights = monthInsights(txs, now.getFullYear(), now.getMonth(), now);
-  const groups = groupWallets(state.data.wallets || [], balances);
+  const cycle = periodOf(now);
+  const monthTxs = inMonth(txs, cycle.year, cycle.month);
+  const plan = monthPlan(state.data.budgets, monthTxs, cycle.year, cycle.month, now);
   const goals = goalsWithProgress();
-
-  const change = insights.expenseChange;
-  const prevName = insights.previousMonth.toLocaleDateString('en-GB', { month: 'short' });
-  const delta = change === null || !isFinite(change) ? '<span class="tile-sub">this month</span>' : `
-    <span class="tile-sub wrap"><span class="${change > 0 ? 'neg' : 'pos'}">${change > 0 ? '▲' : '▼'} ${Math.abs(Math.round(change * 100))}%</span> vs same days of ${esc(prevName)}</span>`;
+  const cycleName = monthLabel(cycle.year, cycle.month).split(' ')[0];
 
   const goalTile = goals.length
     ? `<button class="card tile wide goals-tile" data-action="plan" data-plan="goals">
@@ -553,15 +798,53 @@ function renderHome() {
         <span class="tile-sub">Emergency fund, a laptop, a trip… <span class="link">Create a goal →</span></span>
       </button>`;
 
-  const topBudgets = [...plan.budgets].sort((a, b) => b.fraction - a.fraction).slice(0, 3);
-  const budgetsHtml = topBudgets.length
-    ? `<section class="gap-lg">
-        ${sectionTitle('Budgets', '<button class="link" data-action="plan" data-plan="budgets">See all</button>')}
-        <ul class="card list padded">${topBudgets.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
-      </section>`
-    : `<p class="hint">Set monthly budgets to see how much you can spend per day. <button class="link" data-action="edit-budgets">Set budgets</button></p>`;
+  // Recurring items still to come before the next payday
+  const end = periodBounds(cycle.year, cycle.month).end;
+  let dueCount = 0;
+  let dueOut = 0;
+  for (const item of recurringItems().filter((r) => r.active)) {
+    const dates = occurrences(item, end);
+    dueCount += dates.length;
+    if (item.type === EXPENSE) dueOut += dates.length * item.amount;
+  }
+  const scheduled = dueCount
+    ? `<button class="card scheduled" data-action="open-view" data-view="recurring">
+        <span class="scheduled-ico">${ICONS.repeat}</span>
+        <span class="scheduled-text"><strong>Scheduled</strong><span class="muted small">${dueCount} coming up this month</span></span>
+        ${dueOut ? `<span class="scheduled-amount neg">−${nb(dueOut)}</span>` : ''}
+      </button>`
+    : '';
 
-  const walletGroups = groups.map((group) => `
+  return `
+    <div class="home-search">
+      <button class="search-fake" data-action="open-search">${ICONS.search}<span>Search transactions</span></button>
+      <button class="filter-btn" data-action="open-filters-home" aria-label="Filters">${ICONS.filter}</button>
+    </div>
+    ${budgetRings(plan, monthTxs)}
+    ${walletCards()}
+    ${planCard(plan, cycleName)}
+    <section class="card cash-card">
+      <span class="tile-head"><span class="overline">Cash flow · ${esc(cycleName)}</span></span>
+      <strong class="cash-net ${plan.income - plan.expense < 0 ? 'neg' : ''}">${plan.income - plan.expense < 0 ? '−' : ''}${nb(Math.abs(plan.income - plan.expense))}</strong>
+      <div class="flow-pair">
+        ${flowStat('+', 'Income', nb(plan.income))}
+        ${flowStat('−', 'Spending', nb(plan.expense))}
+      </div>
+    </section>
+    ${scheduled}
+    <section class="gap-sm">${goalTile}</section>
+    <section class="gap-xl">
+      ${sectionTitle('Recent', '<button class="link" data-action="open-view" data-view="transactions">See all</button>')}
+      ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
+    </section>`;
+}
+
+function renderWallets() {
+  const { balances } = computed();
+  const wallets = state.data.wallets || [];
+  const worth = netWorth(balances);
+  const groups = groupWallets(wallets, balances);
+  const list = groups.map((group) => `
     <h3 class="group-title"><span>${group.icon} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
     <ul class="card list">
       ${group.wallets.map((w) => `
@@ -573,32 +856,98 @@ function renderHome() {
           </button>
         </li>`).join('')}
     </ul>`).join('');
-
   return `
-    ${walletCards()}
-    ${planCard(plan, now.toLocaleDateString('en-GB', { month: 'long' }))}
-    <section class="bento">
-      <div class="card tile">
-        <span class="overline">Spent</span>
-        <strong class="tile-big serif">${nb(plan.expense)}</strong>
-        ${delta}
-      </div>
-      <div class="card tile">
-        <span class="overline">Earned</span>
-        <strong class="tile-big serif">${nb(plan.income)}</strong>
-        <span class="tile-sub">this month</span>
-      </div>
-      ${goalTile}
+    <section class="hero-block">
+      <p class="overline">Net worth</p>
+      <p class="display ${worth.net < 0 ? 'neg' : ''}">${bigMoney(worth.net)}</p>
+      <p class="hero-sub">Assets ${nb(worth.assets)} · Debts ${nb(worth.debts)}</p>
     </section>
-    ${budgetsHtml}
-    <section class="gap-xl">
-      ${sectionTitle('Recent', '<button class="link" data-action="tab" data-tab="transactions">See all</button>')}
-      ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
+    <section class="gap-lg">
+      ${list || '<p class="empty">No wallets yet. Add your first one below.</p>'}
     </section>
-    <section class="gap-xl" id="accounts">
-      ${sectionTitle('Accounts')}
-      ${walletGroups || '<p class="empty">No wallets yet. Add them in the Wallets tab of your sheet.</p>'}
-    </section>`;
+    <button class="btn-secondary" data-action="add-wallet">+ New wallet</button>
+    <p class="hint small">Tap a wallet to see its card, adjust its balance, restyle it or remove it.</p>`;
+}
+
+function renderMore() {
+  const active = recurringItems().filter((r) => r.active).length;
+  const goals = (state.data.goals || []).length;
+  const rows = [
+    ['open-view', 'transactions', ICONS.transactions, 'Transactions', 'Search, filter and export'],
+    ['open-view', 'recurring', ICONS.repeat, 'Recurring', recurringItems().length ? `${active} active` : 'Rent, subscriptions, salary…'],
+    ['plan', 'goals', ICONS.goal, 'Goals', goals ? `${goals} saving goal${goals === 1 ? '' : 's'}` : 'Save for something'],
+    ['cycle', '', ICONS.calendar, 'Pay cycle', cycleSummary()],
+    ['settings', '', ICONS.settings, 'Settings', 'Connection, currency, decimals'],
+  ];
+  return `
+    <ul class="card list menu">
+      ${rows.map(([action, value, icon, label, sub]) => `
+        <li>
+          <button class="row menu-row" data-action="${action}" data-view="${value}" data-plan="${value}">
+            <span class="menu-ico">${icon}</span>
+            <span class="menu-text"><span class="row-label">${label}</span><span class="muted small">${esc(sub)}</span></span>
+            <span class="row-chevron">${ICONS.chevron}</span>
+          </button>
+        </li>`).join('')}
+    </ul>
+    <section class="gap-lg">${appearancePicker()}</section>
+    <p class="hint small">WhatTheFund ${APP_VERSION}</p>`;
+}
+
+function renderRecurring() {
+  const items = [...recurringItems()].sort((a, b) => (a.active === b.active ? a.nextDate.localeCompare(b.nextDate) : a.active ? -1 : 1));
+  if (!items.length) {
+    return `
+      <section class="card empty-card">
+        <p class="empty-icon">🔁</p>
+        <h2>Nothing repeats yet</h2>
+        <p class="muted">Rent, subscriptions, a salary: set it once and it's added to your transactions on the day, every day, week, month or year.</p>
+        <button class="btn-primary" data-action="new-recurring">New recurring item</button>
+      </section>`;
+  }
+  const now = new Date();
+  const horizon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 31);
+  let out = 0;
+  let inc = 0;
+  for (const item of items.filter((r) => r.active)) {
+    const count = occurrences(item, horizon).length;
+    if (item.type === EXPENSE) out += count * item.amount;
+    if (item.type === INCOME) inc += count * item.amount;
+  }
+  const row = (item) => {
+    const title = item.type === TRANSFER ? 'Transfer' : item.note || item.subcategory || item.category;
+    const icon = item.type === TRANSFER ? '🔁' : categoryIcon(item.category);
+    const cls = item.type === EXPENSE ? 'neg' : item.type === INCOME ? 'pos' : 'neutral';
+    const sign = item.type === EXPENSE ? '−' : item.type === INCOME ? '+' : '';
+    const next = item.nextDate ? new Date(`${item.nextDate}T12:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '—';
+    const where = item.type === TRANSFER ? `${esc(item.wallet)} → ${esc(item.toWallet)}` : esc(item.wallet);
+    return `
+      <li class="card recur ${item.active ? '' : 'paused'}">
+        <button class="recur-main" data-action="edit-recurring" data-id="${item.id}" aria-label="Edit ${esc(title)}">
+          <span class="tx-icon ${item.type.toLowerCase()}">${icon}</span>
+          <span class="tx-main">
+            <span class="tx-title">${esc(title)}</span>
+            <span class="tx-detail">${esc(FREQUENCY_NAMES[item.frequency] || item.frequency)} · ${where}</span>
+          </span>
+          <span class="tx-side"><span class="amount ${cls}">${sign}${esc(money(item.amount))}</span></span>
+        </button>
+        <div class="goal-foot">
+          <span class="muted small">${item.active ? `Next: ${esc(next)}` : 'Paused'}</span>
+          <button class="pill-btn" data-action="toggle-recurring" data-id="${item.id}">${item.active ? 'Pause' : 'Resume'}</button>
+        </div>
+      </li>`;
+  };
+  return `
+    <section class="card cash-card">
+      <span class="tile-head"><span class="overline">Next 30 days</span></span>
+      <div class="flow-pair">
+        ${flowStat('+', 'Coming in', nb(inc))}
+        ${flowStat('−', 'Going out', nb(out))}
+      </div>
+    </section>
+    <ul class="goal-list gap-lg">${items.map(row).join('')}</ul>
+    <button class="btn-secondary" data-action="new-recurring">+ New recurring item</button>
+    <p class="hint small">Items are added to your transactions on their day, also when you haven't opened the app.</p>`;
 }
 
 function planSwitch() {
@@ -736,8 +1085,8 @@ function renderReports() {
       <p class="overline">Net this month</p>
       <p class="display ${totals.net < 0 ? 'neg' : ''}">${bigMoney(totals.net)}</p>
       <div class="hero-split">
-        <div><span class="overline">Income</span><strong class="pos">${nb(totals.income)}</strong></div>
-        <div class="stat"><span class="overline">Expenses</span><strong>${nb(totals.expense)}</strong>${delta}</div>
+        ${flowStat('+', 'Income', nb(totals.income))}
+        <div class="stat">${flowStat('−', 'Spending', nb(totals.expense))}${delta}</div>
       </div>
     </section>
     ${monthTxs.length ? '' : '<p class="empty">No transactions in this month.</p>'}
@@ -804,8 +1153,8 @@ function resultsHtml() {
     summary = `
       <div class="card result-summary">
         <div><span class="overline">${s.count === 1 ? 'Result' : 'Results'}</span><strong class="serif">${s.count}</strong></div>
-        <div><span class="overline">Out</span><strong>${nb(s.out)}</strong></div>
-        <div><span class="overline">In</span><strong class="pos">${nb(s.in)}</strong></div>
+        ${flowStat('−', 'Out', nb(s.out))}
+        ${flowStat('+', 'In', nb(s.in))}
         <button class="icon-btn" data-action="export" aria-label="Export these transactions as CSV" ${s.count ? '' : 'disabled'}>${ICONS.share}</button>
       </div>`;
   }
@@ -872,8 +1221,8 @@ function renderWallet(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   const type = wallet?.type || 'Other';
   const mine = txs.filter((tx) => tx.wallet === name || tx.toWallet === name);
-  const now = new Date();
-  const flow = walletFlow(name, inMonth(mine, now.getFullYear(), now.getMonth()));
+  const cycle = periodOf(new Date());
+  const flow = walletFlow(name, inMonth(mine, cycle.year, cycle.month));
   const balance = balances.get(name) || 0;
   const style = parseCard(wallet?.card, type);
   return `
@@ -894,15 +1243,16 @@ function renderWallet(name) {
         <button class="action-btn" data-action="customize-card" data-name="${esc(name)}">${ICONS.palette}<span>Customize card</span></button>
       </div>` : ''}
       <div class="card wallet-flow">
-        <div><span class="overline">In this month</span><strong class="pos">${nb(flow.moneyIn)}</strong></div>
-        <div><span class="overline">Out this month</span><strong>${nb(flow.moneyOut)}</strong></div>
+        ${flowStat('+', 'In this month', nb(flow.moneyIn))}
+        ${flowStat('−', 'Out this month', nb(flow.moneyOut))}
       </div>
       ${wallet ? `<p class="muted small wallet-opening">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
     </section>
     <section class="gap-lg">
       ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
       ${txListByDay(mine, { perspective: name })}
-    </section>`;
+    </section>
+    ${wallet ? `<button class="btn-danger" data-action="remove-wallet" data-name="${esc(name)}">${ICONS.trash} Remove this wallet</button>` : ''}`;
 }
 
 function settingsForm({ firstRun }) {
@@ -947,6 +1297,10 @@ function appearancePicker() {
 function renderSettings() {
   return `
     ${appearancePicker()}
+    <section class="gap-lg">
+      ${sectionTitle('Pay cycle')}
+      <ul class="card list"><li><button class="row" data-action="cycle"><span class="row-label">Month starts</span><span class="row-value">${esc(cycleSummary())}</span><span class="row-chevron">${ICONS.chevron}</span></button></li></ul>
+    </section>
     <section class="gap-lg">${sectionTitle('Connection')}</section>
     ${settingsForm({ firstRun: false })}
     <section class="gap-xl">
@@ -965,7 +1319,7 @@ function renderSetup() {
   return `
     <main class="setup">
       <p class="overline">Personal finance · on your Google Sheet</p>
-      <h1>Expense<br><em>Tracker</em></h1>
+      <h1>WhatThe<br><em>Fund</em></h1>
       <p class="muted">Connect to your Google Sheet using the Apps Script URL and API key. They're saved on this device only.</p>
       ${settingsForm({ firstRun: true })}
       <a class="btn-secondary" href="?demo">Preview with sample data</a>
@@ -982,7 +1336,7 @@ function greeting(now = new Date()) {
 }
 
 function titleText() {
-  if (state.view === 'settings') return 'Settings';
+  if (typeof state.view === 'string') return VIEW_TITLES[state.view];
   if (state.view?.wallet) return state.view.wallet;
   if (state.tab === 'home') return greeting();
   return TAB_TITLES[state.tab];
@@ -1007,7 +1361,6 @@ function headerHtml() {
       </div>
       <button class="icon-btn" data-action="toggle-theme" aria-label="${isDark() ? 'Switch to light mode' : 'Switch to dark mode'}">${isDark() ? ICONS.sun : ICONS.moon}</button>
       ${!isDemo ? `<button class="icon-btn ${state.loading ? 'spin' : ''}" data-action="refresh" aria-label="Refresh" ${state.loading ? 'disabled' : ''}>${ICONS.refresh}</button>` : ''}
-      ${!inner && !isDemo ? `<button class="icon-btn" data-action="settings" aria-label="Settings">${ICONS.settings}</button>` : ''}
     </div>
     ${isDemo ? '<p class="banner">Sample data — changes aren\'t saved. <a href="./">Exit preview</a></p>' : ''}
     ${state.error ? `<p class="banner error">Couldn't update: ${esc(state.error)}${state.data ? ' Showing saved data.' : ''}</p>` : ''}`;
@@ -1026,15 +1379,18 @@ function mainHtml() {
       : '<p class="empty">Couldn\'t load your data yet. Check Settings, then tap refresh.</p>';
   }
   if (state.view?.wallet) return renderWallet(state.view.wallet);
-  if (state.tab === 'transactions') return renderTransactions();
+  if (state.view === 'transactions') return renderTransactions();
+  if (state.view === 'recurring') return renderRecurring();
+  if (state.tab === 'wallets') return renderWallets();
   if (state.tab === 'budgets') return renderPlan();
   if (state.tab === 'reports') return renderReports();
+  if (state.tab === 'more') return renderMore();
   return renderHome();
 }
 
 function tabButton(tab) {
-  const active = state.view === null && state.tab === tab;
-  return `<button class="tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" ${active ? 'aria-current="page"' : ''}>${ICONS[tab]}<span>${TAB_TITLES[tab]}</span></button>`;
+  const active = state.tab === tab; // the tab you came from stays lit while you look at a wallet, search or settings
+  return `<button class="tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" ${active && state.view === null ? 'aria-current="page"' : ''}>${ICONS[tab]}<span>${TAB_TITLES[tab]}</span></button>`;
 }
 
 /** Big numbers count up from zero when a screen opens (skipped with Reduce Motion). */
@@ -1067,10 +1423,9 @@ function render() {
   app.innerHTML = `
     <header class="topbar">${headerHtml()}</header>
     <main class="content ${animate ? 'enter' : ''}">${mainHtml()}</main>
-    <nav class="tabbar">
-      <div class="tab-group">${tabButton('home')}${tabButton('transactions')}${tabButton('budgets')}${tabButton('reports')}</div>
-      <button class="tab-add" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
-    </nav>`;
+    <button class="fab" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
+    <nav class="tabbar" aria-label="Main">${TABS.map(tabButton).join('')}</nav>`;
+  setupCarousel();
   // Numbers count up the first time each screen opens after launching the app; after that they just appear
   const screen = JSON.stringify([state.tab, state.plan, state.view]);
   if (animate && !countedScreens.has(screen)) {
@@ -1210,12 +1565,32 @@ app.addEventListener('click', async (event) => {
   } else if (action === 'add-money') {
     const goal = findGoal(target.dataset.name);
     if (goal) openAddMoneySheet({ goal, money, onSave: saveGoal });
+  } else if (action === 'open-view') {
+    openView(target.dataset.view);
+  } else if (action === 'open-search') {
+    openView('transactions');
+    document.getElementById('search')?.focus();
+  } else if (action === 'open-filters-home') {
+    openView('transactions');
+    openFilters();
+  } else if (action === 'dot') {
+    showCard(Number(target.dataset.i));
+  } else if (action === 'add-wallet') {
+    openNewWallet();
+  } else if (action === 'remove-wallet') {
+    removeWallet(target.dataset.name);
+  } else if (action === 'new-recurring') {
+    openRecurring();
+  } else if (action === 'edit-recurring') {
+    openRecurring(Number(target.dataset.id));
+  } else if (action === 'toggle-recurring') {
+    toggleRecurring(Number(target.dataset.id)).catch((error) => toast(`Couldn't save: ${error.message}`));
+  } else if (action === 'cycle') {
+    openCycle();
   } else if (action === 'plan') {
     state.plan = target.dataset.plan;
     if (state.tab !== 'budgets' || state.view !== null) goTab('budgets');
     else { state.animate = true; render(); }
-  } else if (action === 'scroll') {
-    document.getElementById(target.dataset.target)?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
   } else if (action === 'cf-month') {
     state.month = { year: Number(target.dataset.year), month: Number(target.dataset.month) };
     render();
@@ -1371,9 +1746,12 @@ const startHash = location.hash.slice(1);
 const legacyTabs = { overview: 'home', summary: 'reports', goals: 'budgets', plan: 'budgets' };
 const startTab = legacyTabs[startHash] || startHash;
 if (TABS.includes(startTab)) state.tab = startTab;
+if (startTab === 'transactions' || startTab === 'recurring') state.view = startTab;
 if (startHash === 'goals') state.plan = 'goals';
 
+// A link straight to a screen (#transactions) still gets a Home entry behind it, so Back and the tabs work
 history.replaceState({ view: null }, '');
+if (state.view) history.pushState({ view: state.view }, '');
 render();
 refresh();
 if (startHash === 'add') openEntry();

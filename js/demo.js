@@ -79,5 +79,18 @@ export function demoData() {
     { name: 'New laptop', target: 20000000, wallet: '', saved: 6500000, targetDate: ahead(7) },
     { name: 'Holiday', target: 8000000, wallet: '', saved: 2000000, targetDate: ahead(10) },
   ];
-  return { sheet: 'Sample data', wallets, categories, budgets, goals, transactions };
+  const inDays = (n) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const item = (id, n, frequency, fields) => ({ id, toWallet: '', category: '', subcategory: '', note: '', frequency, nextDate: inDays(n), day: Number(inDays(n).slice(8, 10)), active: true, ...fields });
+  const recurring = [
+    item(1, 4, 'monthly', { type: 'Expense', amount: 186000, wallet: 'Credit Card', category: 'Entertainment', subcategory: 'Subscriptions', note: 'Streaming' }),
+    item(2, 9, 'monthly', { type: 'Expense', amount: 450000, wallet: 'Main Bank', category: 'Bills & Utilities', subcategory: 'Internet', note: 'Internet' }),
+    item(3, 18, 'monthly', { type: 'Income', amount: 12000000, wallet: 'Main Bank', category: 'Salary', note: 'Monthly salary' }),
+    item(4, 19, 'monthly', { type: 'Transfer', amount: 3000000, wallet: 'Main Bank', toWallet: 'Savings Bank', note: 'Save' }),
+    item(5, 3, 'weekly', { type: 'Expense', amount: 150000, wallet: 'E-wallet', category: 'Health', subcategory: 'Fitness', note: 'Gym class', active: false }),
+  ];
+  const settings = { payday: 1, paydayWeekdays: false };
+  return { sheet: 'Sample data', wallets, categories, budgets, goals, recurring, settings, transactions };
 }

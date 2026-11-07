@@ -74,8 +74,67 @@ export function groupWallets(wallets, balances) {
     }));
 }
 
+// ---------- pay cycle ----------
+// A "month" runs from payday to the day before the next payday (set in Settings; the Telegram bot uses the same).
+// Payday 1 is the calendar month. Otherwise the cycle is named after the month it ends in, so with payday 25
+// "December" is 25 Nov – 24 Dec: the pay that arrives on 25 Nov funds December. With "weekdays only" on, a payday
+// that lands on a weekend moves to the Friday before.
+
+const DAY = 86400000;
+let cycle = { day: 1, weekdays: false };
+
+/** Sets the pay cycle from the sheet's settings: {payday: 1–31, paydayWeekdays: boolean}. */
+export function setPayCycle({ payday = 1, paydayWeekdays = false } = {}) {
+  const day = Math.round(Number(payday));
+  cycle = { day: day >= 1 && day <= 31 ? day : 1, weekdays: !!paydayWeekdays };
+}
+export const isCustomCycle = () => cycle.day !== 1 || cycle.weekdays;
+
+/** The date a cycle starts in calendar month `month` (0–11; may overflow into other years). */
+function paydayOn(year, month) {
+  const last = new Date(year, month + 1, 0).getDate();
+  const date = new Date(year, month, Math.min(cycle.day, last));
+  if (cycle.weekdays) {
+    const weekday = date.getDay();
+    if (weekday === 6) date.setDate(date.getDate() - 1);
+    else if (weekday === 0) date.setDate(date.getDate() - 2);
+  }
+  return date;
+}
+
+/** {start, end} (end exclusive) of the cycle named `year`/`month`. */
+export function periodBounds(year, month) {
+  return cycle.day === 1
+    ? { start: paydayOn(year, month), end: paydayOn(year, month + 1) }
+    : { start: paydayOn(year, month - 1), end: paydayOn(year, month) };
+}
+
+/** {year, month} of the cycle that contains `date`. */
+export function periodOf(date = new Date()) {
+  for (const delta of [0, 1, -1]) {
+    const d = new Date(date.getFullYear(), date.getMonth() + delta, 1);
+    const { start, end } = periodBounds(d.getFullYear(), d.getMonth());
+    if (date >= start && date < end) return { year: d.getFullYear(), month: d.getMonth() };
+  }
+  return { year: date.getFullYear(), month: date.getMonth() };
+}
+
+export function periodDays(year, month) {
+  const { start, end } = periodBounds(year, month);
+  return Math.round((end - start) / DAY);
+}
+
+/** "25 Oct – 24 Nov" (only meaningful when the cycle isn't the calendar month). */
+export function periodRange(year, month) {
+  const { start, end } = periodBounds(year, month);
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 1);
+  const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `${fmt(start)} – ${fmt(last)}`;
+}
+
 export function inMonth(transactions, year, month) {
-  return transactions.filter((tx) => tx.when.getFullYear() === year && tx.when.getMonth() === month);
+  const { start, end } = periodBounds(year, month);
+  return transactions.filter((tx) => tx.when >= start && tx.when < end);
 }
 
 export function monthTotals(transactions) {
@@ -144,10 +203,12 @@ export function daysInMonth(year, month) {
 export function monthPlan(budgets, monthTransactions, year, month, now = new Date()) {
   const totals = monthTotals(monthTransactions);
   const progress = budgetProgress(budgets, monthTransactions);
-  const days = daysInMonth(year, month);
-  const isCurrent = now.getFullYear() === year && now.getMonth() === month;
-  const isPast = year < now.getFullYear() || (year === now.getFullYear() && month < now.getMonth());
-  const daysLeft = isCurrent ? days - now.getDate() + 1 : isPast ? 0 : days;
+  const days = periodDays(year, month);
+  const { start, end } = periodBounds(year, month);
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const isCurrent = now >= start && now < end;
+  const isPast = now >= end;
+  const daysLeft = isCurrent ? Math.round((end - midnight) / DAY) : isPast ? 0 : days;
 
   let mode, total, used;
   if (progress.length) {
@@ -217,8 +278,10 @@ export function monthInsights(transactions, year, month, now = new Date()) {
   const prev = new Date(year, month - 1, 1);
   const prevTotals = monthTotals(inMonth(transactions, prev.getFullYear(), prev.getMonth()));
   const totals = monthTotals(monthTxs);
-  const isCurrent = now.getFullYear() === year && now.getMonth() === month;
-  const days = isCurrent ? now.getDate() : daysInMonth(year, month);
+  const bounds = periodBounds(year, month);
+  const isCurrent = now >= bounds.start && now < bounds.end;
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = isCurrent ? Math.round((midnight - bounds.start) / DAY) + 1 : periodDays(year, month);
 
   const expenses = monthTxs.filter((tx) => tx.type === EXPENSE);
   const byWeekday = new Array(7).fill(0);
@@ -229,8 +292,9 @@ export function monthInsights(transactions, year, month, now = new Date()) {
   // Compare spending with the same number of days last month when this month isn't finished
   let prevComparable = prevTotals.expense;
   if (isCurrent) {
-    const cutoff = new Date(prev.getFullYear(), prev.getMonth(), Math.min(now.getDate(), daysInMonth(prev.getFullYear(), prev.getMonth())), 23, 59);
-    prevComparable = monthTotals(inMonth(transactions, prev.getFullYear(), prev.getMonth()).filter((tx) => tx.when <= cutoff)).expense;
+    const before = periodBounds(prev.getFullYear(), prev.getMonth()).start;
+    const cutoff = new Date(before.getFullYear(), before.getMonth(), before.getDate() + days);
+    prevComparable = monthTotals(inMonth(transactions, prev.getFullYear(), prev.getMonth()).filter((tx) => tx.when < cutoff)).expense;
   }
 
   return {
@@ -360,11 +424,11 @@ export const RANGES = [
 /** {start, end} (end exclusive) for a date-range preset, or null for "all time". */
 export function rangeBounds(range, now = new Date(), from = '', to = '') {
   const y = now.getFullYear();
-  const m = now.getMonth();
+  const { year: py, month: pm } = periodOf(now); // "month" follows the pay cycle
   switch (range) {
-    case 'month': return { start: new Date(y, m, 1), end: new Date(y, m + 1, 1) };
-    case 'last-month': return { start: new Date(y, m - 1, 1), end: new Date(y, m, 1) };
-    case '3-months': return { start: new Date(y, m - 2, 1), end: new Date(y, m + 1, 1) };
+    case 'month': return periodBounds(py, pm);
+    case 'last-month': return periodBounds(py, pm - 1);
+    case '3-months': return { start: periodBounds(py, pm - 2).start, end: periodBounds(py, pm).end };
     case 'year': return { start: new Date(y, 0, 1), end: new Date(y + 1, 0, 1) };
     case 'custom': {
       const start = parseDate(from);
@@ -445,4 +509,36 @@ export function toCsv(txs) {
   const header = ['ID', 'Date', 'Type', 'Amount', 'Wallet', 'To Wallet', 'Category', 'Subcategory', 'Note'];
   const lines = [...txs].reverse().map((t) => [t.id, t.date, t.type, t.amount, t.wallet, t.toWallet, t.category, t.subcategory, t.note].map(cell).join(','));
   return [header.join(','), ...lines].join('\n') + '\n';
+}
+
+// ---------- recurring transactions ----------
+
+export const FREQUENCY_NAMES = { daily: 'Every day', weekly: 'Every week', monthly: 'Every month', yearly: 'Every year' };
+
+/** The day after `day` ('YYYY-MM-DD') for a frequency; same rule as the sheet's script (month-end days clamp: 31 → 28 Feb). */
+export function advanceDay(day, frequency, anchor = 0) {
+  const y = Number(day.slice(0, 4));
+  const m = Number(day.slice(5, 7)) - 1;
+  const d = Number(day.slice(8, 10));
+  let date;
+  if (frequency === 'daily') date = new Date(Date.UTC(y, m, d + 1));
+  else if (frequency === 'weekly') date = new Date(Date.UTC(y, m, d + 7));
+  else {
+    const target = new Date(Date.UTC(y, m + (frequency === 'yearly' ? 12 : 1), 1));
+    const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+    date = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), Math.min(anchor || d, last)));
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+/** Dates ('YYYY-MM-DD') an active recurring item is due on from its next date up to, but not including, `until` (a Date). */
+export function occurrences(item, until) {
+  const stop = `${until.getFullYear()}-${String(until.getMonth() + 1).padStart(2, '0')}-${String(until.getDate()).padStart(2, '0')}`;
+  const dates = [];
+  let day = item.nextDate;
+  for (let guard = 0; day && day < stop && guard < 400; guard++) {
+    dates.push(day);
+    day = advanceDay(day, item.frequency, item.day);
+  }
+  return dates;
 }
