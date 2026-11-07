@@ -19,7 +19,7 @@ import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
 
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '4.2.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -1868,6 +1868,14 @@ refresh();
 if (startHash === 'add') openEntry();
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // When a new version has finished downloading and takes over, reload once so you see it right away
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || document.body.classList.contains('sheet-open')) return;
+    reloaded = true;
+    location.reload();
+  });
   navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
 }
 
