@@ -1,7 +1,7 @@
 // Savings goal sheets: create / edit a goal, or quickly add money to a goal you track by hand.
 // A goal can follow a wallet's balance (e.g. a savings account), or a "saved" amount you update yourself.
 import { formatNumber } from './calc.js';
-import { icon, walletIcon } from './ui.js';
+import { icon } from './ui.js';
 import { ICONS, esc } from './ui.js';
 
 const digits = (text) => {
@@ -66,7 +66,7 @@ export function openGoalSheet({ goal = null, wallets, money, onSave, onDelete })
         <p class="field-label">Track progress with</p>
         <div class="chip-row wrap">
           <button type="button" class="chip ${form.wallet ? '' : 'active'}" data-act="wallet" data-v="">${icon('pencil-simple')} Amount I enter</button>
-          ${wallets.map((w) => `<button type="button" class="chip ${form.wallet === w.name ? 'active' : ''}" data-act="wallet" data-v="${esc(w.name)}">${walletIcon(w.type)} ${esc(w.name)}</button>`).join('')}
+          ${wallets.map((w) => `<button type="button" class="chip ${form.wallet === w.name ? 'active' : ''}" data-act="wallet" data-v="${esc(w.name)}">${esc(w.name)}</button>`).join('')}
         </div>
         <p class="muted small field-help">${form.wallet
           ? `Progress follows the balance of <strong>${esc(form.wallet)}</strong>, so moving money there counts automatically.`

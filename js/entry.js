@@ -2,7 +2,7 @@
 // wallet chips, Today / Yesterday / pick-a-date, note. Combines Spendee's "+" flow with
 // MoneyCoach's amount-first quick entry. Opens over the app; the app is not re-rendered meanwhile.
 import { EXPENSE, INCOME, TRANSFER, formatDateTime } from './calc.js';
-import { ICONS, categoryIcon, esc, icon, walletIcon } from './ui.js';
+import { ICONS, categoryIcon, esc, icon } from './ui.js';
 
 const LAST_KEY = 'expense-tracker.last-wallets';
 const MAX_DIGITS = 12;
@@ -30,7 +30,8 @@ const isoDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDa
  *                                     one (it may be in the future), a Repeat row is added, and the saved object also
  *                                     carries `frequency` and `nextDate`.
  */
-export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, onDelete, recurring = null }) {
+export function openEntrySheet({ data, money, moneyFor = null, decimals = 0, tx = null, onSave, onDelete, recurring = null }) {
+  const shown = (value) => (moneyFor ? moneyFor(state.wallet, value) : money(value)); // the amount is in the chosen wallet's currency
   const last = loadLast();
   const wallets = (data.wallets || []).map((w) => w.name);
   const walletTypes = Object.fromEntries((data.wallets || []).map((w) => [w.name, w.type]));
@@ -39,7 +40,11 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   const yesterday = isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
   const tomorrow = isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
   let frequency = recurring?.frequency || 'monthly';
-  const categoriesFor = (type) => (data.categories && data.categories[type]) || {};
+  const categoriesFor = (type) => {
+    const base = (data.categories && data.categories[type]) || {};
+    // An entry whose category isn't in the Categories tab (a "Balance adjustment") can still be edited
+    return tx && tx.type === type && tx.category && !base[tx.category] ? { ...base, [tx.category]: [] } : base;
+  };
 
   const state = tx
     ? {
@@ -117,7 +122,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   function walletChips(field, exclude = null) {
     return `<div class="chip-row">${wallets
       .filter((w) => w !== exclude)
-      .map((w) => chip(`${walletIcon(walletTypes[w])} ${esc(w)}`, field, w, state[field] === w))
+      .map((w) => chip(esc(w), field, w, state[field] === w))
       .join('')}</div>`;
   }
 
@@ -173,7 +178,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
   function renderAmount() {
     const display = sheet.querySelector('.amount-display');
     if (!display) return;
-    display.textContent = money(amountValue());
+    display.textContent = shown(amountValue());
     display.classList.toggle('empty', !state.amount);
   }
 
@@ -190,7 +195,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       <div class="segmented" role="tablist">
         ${[EXPENSE, INCOME, TRANSFER].map((t) => `<button type="button" role="tab" aria-selected="${state.type === t}" class="seg ${t.toLowerCase()} ${state.type === t ? 'active' : ''}" data-act="type" data-v="${t}">${t}</button>`).join('')}
       </div>
-      <div class="amount-display ${state.type.toLowerCase()} ${state.amount ? '' : 'empty'}" aria-live="polite">${esc(money(amountValue()))}</div>
+      <div class="amount-display ${state.type.toLowerCase()} ${state.amount ? '' : 'empty'}" aria-live="polite">${esc(shown(amountValue()))}</div>
       <div class="sheet-body">
         ${isTransfer
           ? `<p class="field-label">From</p>${walletChips('wallet')}<p class="field-label">To</p>${walletChips('toWallet', state.wallet)}`

@@ -1261,6 +1261,22 @@ div.flow-stat { display: flex; flex-direction: row; gap: 10px; }
 .payday-box { margin-top: 14px; padding: 14px 16px; border-radius: var(--radius-sm); background: var(--accent-soft); }
 .payday-preview { margin: 0; font-size: 14px; line-height: 1.55; }
 
+/* a currency code (USD) must not touch the number */
+.cur { margin-right: 0.22em; }
+
+/* ---------- assets above debts, other-currency net worth, reordering ---------- */
+.wcard-label { display: block; }
+.foot-line { display: block; line-height: 1.35; }
+.hero-lines { display: flex; flex-direction: column; gap: 2px; margin: 0 0 4px; font-size: 13.5px; color: var(--muted); }
+.worth-card { display: flex; flex-direction: column; gap: 3px; margin-top: 12px; padding: 16px 18px 17px; }
+.worth-amount { margin: 2px 0 4px; font-family: var(--display); font-size: 28px; font-weight: 600; line-height: 1.2; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.reorder-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 2px 10px; }
+.reorder-row { display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 16px; }
+.reorder-row .row-label small { margin-left: 6px; font-size: 12px; font-weight: 400; }
+.reorder-row .move { width: 40px; height: 40px; color: var(--accent-text); }
+.reorder-row .move svg { width: 22px; height: 22px; }
+.reorder-row .move:disabled { opacity: 0.25; }
+
 /* ---------- accessibility: Reduce Transparency → solid surfaces ---------- */
 @media (prefers-reduced-transparency: reduce) {
   :root[data-theme="dark"] { --card: #141a2b; }

@@ -2,8 +2,8 @@
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
   EMPTY_FILTERS, EXPENSE, FREQUENCY_NAMES, INCOME, RANGES, TRANSFER,
-  activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatMoney,
-  goalProgress, groupWallets, inMonth, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
+  activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatDateTime, formatMoney,
+  goalProgress, groupWallets, inMonth, isBaseWallet, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
   occurrences, periodBounds, periodOf, periodRange, prepareTransactions, rangeBounds, setPayCycle, spendingParts, summarize,
   timeAgo, toCsv, walletBalances, walletFlow,
 } from './calc.js';
@@ -15,11 +15,13 @@ import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
 import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
+import { openNewBudgetSheet } from './newbudget.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
-import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion, walletIcon } from './ui.js';
+import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
-const APP_VERSION = '4.5.0';
+const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
+const APP_VERSION = '4.6.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -61,6 +63,7 @@ const state = {
   fetchedAt: isDemo ? Date.now() : cached?.fetchedAt || null,
   loading: false,
   error: null,
+  reorder: false,             // Wallets tab: reordering mode
   menu: false,                // the ⋯ menu at the top right is open
   animate: true,              // play the entrance animation on the next render (navigation only)
 };
@@ -95,12 +98,30 @@ function setAppearance(value) {
 darkQuery?.addEventListener?.('change', () => { if (appearance === 'auto') { applyTheme(); render(); } });
 applyTheme();
 
+// ---------- currencies: a wallet may have its own; without one it uses the default (Settings) ----------
+
+const walletOf = (name) => (state.data?.wallets || []).find((w) => w.name === name);
+const walletCurrency = (name) => walletOf(name)?.currency || currency();
+const moneyFor = (name, value) => formatMoney(value, { currency: walletCurrency(name), decimals: decimals() });
+const isBase = (wallet) => isBaseWallet(wallet, currency());
+
 let memo = null;
-/** Transactions with parsed dates + wallet balances, recalculated only when the data changes. */
+/**
+ * Transactions with parsed dates + wallet balances, recalculated only when the data changes.
+ * `baseTxs` and `baseBalances` leave out wallets in another currency: net worth, cash flow, budgets and reports
+ * only add up money in the default currency.
+ */
 function computed() {
-  if (memo?.source !== state.data) {
+  if (memo?.source !== state.data || memo.cur !== currency()) {
+    const wallets = state.data.wallets || [];
     const txs = prepareTransactions(state.data.transactions || []);
-    memo = { source: state.data, txs, balances: walletBalances(state.data.wallets || [], txs) };
+    const balances = walletBalances(wallets, txs);
+    const baseNames = new Set(wallets.filter(isBase).map((w) => w.name));
+    memo = {
+      source: state.data, cur: currency(), txs, balances, baseNames,
+      baseTxs: txs.filter((t) => baseNames.has(t.wallet)),
+      baseBalances: new Map([...balances].filter(([name]) => baseNames.has(name))),
+    };
   }
   return memo;
 }
@@ -221,6 +242,7 @@ function openEntry(id = null) {
   openEntrySheet({
     data: state.data,
     money,
+    moneyFor,
     decimals: decimals(),
     tx,
     onSave: (transaction) => saveTransaction(transaction, tx ? tx.id : null),
@@ -236,7 +258,7 @@ async function saveBudgets(budgets) {
 
 function openBudgets() {
   if (!state.data) return;
-  const { txs } = computed();
+  const { baseTxs: txs } = computed();
   const current = periodOf(new Date());
   const last = new Date(current.year, current.month - 1, 1);
   const lastMonth = Object.fromEntries(
@@ -281,16 +303,26 @@ async function deleteGoal(name) {
   toast('Goal deleted');
 }
 
+/**
+ * Adjusting a balance adds an entry (income when it goes up, expense when it goes down, category "Balance
+ * adjustment") instead of editing the opening balance, so Cash Flow and Net Worth always move together.
+ */
 async function saveBalance(name, balance) {
-  let wallets;
+  const current = computed().balances.get(name) || 0;
+  const difference = Math.round((balance - current) * 100) / 100;
+  if (difference === 0) return;
+  const date = formatDateTime(new Date());
   if (isDemo) {
-    const current = computed().balances.get(name) || 0;
-    wallets = state.data.wallets.map((w) => (w.name === name ? { ...w, openingBalance: w.openingBalance + balance - current } : w));
+    const entry = {
+      id: Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1, date,
+      type: difference > 0 ? INCOME : EXPENSE, amount: Math.abs(difference), wallet: name, toWallet: '',
+      category: ADJUST_CATEGORY, subcategory: '', note: ADJUST_CATEGORY,
+    };
+    applyLocal((list) => [...list, entry]);
   } else {
-    const result = await apiPost({ action: 'setBalance', wallet: name, balance });
-    wallets = state.data.wallets.map((w) => (w.name === name ? { ...w, openingBalance: result.wallet.openingBalance } : w));
+    const { transaction } = await apiPost({ action: 'setBalance', wallet: name, balance, date });
+    if (transaction) applyLocal((list) => [...list, transaction]);
   }
-  setData({ wallets });
   toast(`${name} balance updated`);
 }
 
@@ -304,13 +336,13 @@ function openCard(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   if (!wallet) return;
   const balance = computed().balances.get(name) || 0;
-  openCardSheet({ wallet, amountHtml: cardMoney(balance), negative: balance < 0, onSave: (card) => saveCard(name, card) });
+  openCardSheet({ wallet, amountHtml: cardMoney(balance, walletCurrency(name)), negative: balance < 0, onSave: (card) => saveCard(name, card) });
 }
 
 function openBalance(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   if (!wallet) return;
-  openBalanceSheet({ wallet: name, type: wallet.type, current: computed().balances.get(name) || 0, money, onSave: (b) => saveBalance(name, b) });
+  openBalanceSheet({ wallet: name, type: wallet.type, current: computed().balances.get(name) || 0, money: (v) => moneyFor(name, v), onSave: (b) => saveBalance(name, b) });
 }
 
 // ---------- wallets: add / remove ----------
@@ -324,7 +356,7 @@ async function addWallet(wallet) {
 
 function openNewWallet() {
   if (!state.data) return;
-  openWalletSheet({ existing: (state.data.wallets || []).map((w) => w.name), onSave: addWallet });
+  openWalletSheet({ existing: (state.data.wallets || []).map((w) => w.name), defaultCurrency: currency(), onSave: addWallet });
 }
 
 async function removeWallet(name) {
@@ -362,18 +394,18 @@ async function removeWallet(name) {
   }
 }
 
-async function saveWalletEdit(oldName, { name, type }) {
+async function saveWalletEdit(oldName, { name, type, currency: walletCur }) {
   let patch;
   if (isDemo) {
     const swap = (v) => (v === oldName ? name : v);
     patch = {
-      wallets: state.data.wallets.map((w) => (w.name === oldName ? { ...w, name, type } : w)),
+      wallets: state.data.wallets.map((w) => (w.name === oldName ? { ...w, name, type, currency: walletCur } : w)),
       transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
       recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
       goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
     };
   } else {
-    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type })).wallets;
+    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type, currency: walletCur })).wallets;
     const swap = (v) => (v === oldName ? name : v);
     patch = {
       wallets,
@@ -393,7 +425,48 @@ async function saveWalletEdit(oldName, { name, type }) {
 function openEditWallet(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   if (!wallet) return;
-  openWalletSheet({ existing: state.data.wallets.map((w) => w.name), wallet, onSave: (values) => saveWalletEdit(name, values) });
+  openWalletSheet({ existing: state.data.wallets.map((w) => w.name), wallet, defaultCurrency: currency(), onSave: (values) => saveWalletEdit(name, values) });
+}
+
+let orderQueue = Promise.resolve();
+/** Moves a wallet up or down; the order (= the order of the cards on Home) is saved in the sheet in the background. */
+function moveWallet(name, direction) {
+  const wallets = [...(state.data.wallets || [])];
+  const i = wallets.findIndex((w) => w.name === name);
+  const j = i + direction;
+  if (i < 0 || j < 0 || j >= wallets.length) return;
+  [wallets[i], wallets[j]] = [wallets[j], wallets[i]];
+  setData({ wallets });
+  if (isDemo) return;
+  const names = wallets.map((w) => w.name);
+  orderQueue = orderQueue
+    .then(() => apiPost({ action: 'setWalletOrder', names }))
+    .catch((error) => toast(`Couldn't save the order: ${error.message}`));
+}
+
+// ---------- new budget ----------
+
+async function saveNewBudget({ category, limit, isNew }) {
+  let categories = state.data.categories;
+  if (isNew) {
+    categories = isDemo
+      ? { ...categories, Expense: { ...categories.Expense, [category]: [] } }
+      : (await apiPost({ action: 'addCategory', type: 'Expense', name: category })).categories;
+  }
+  const merged = { ...(state.data.budgets || {}), [category]: limit };
+  const budgets = isDemo ? merged : (await apiPost({ action: 'setBudgets', budgets: merged })).budgets;
+  setData({ categories, budgets });
+  toast(`Budget for ${category} added`);
+}
+
+function openNewBudget() {
+  if (!state.data) return;
+  openNewBudgetSheet({
+    categories: Object.keys(state.data.categories?.Expense || {}),
+    budgets: state.data.budgets || {},
+    defaultCurrency: currency(),
+    onSave: saveNewBudget,
+  });
 }
 
 // ---------- recurring ----------
@@ -441,6 +514,7 @@ function openRecurring(id = null) {
   openEntrySheet({
     data: state.data,
     money,
+    moneyFor,
     decimals: decimals(),
     tx: item ? { ...item, date: `${item.nextDate} 09:00` } : null,
     recurring: { frequency: item?.frequency || 'monthly' },
@@ -516,15 +590,13 @@ function amountClass(tx, perspective) {
  * A big serif amount: smaller currency symbol, the number counts up on arrival (see countUp()).
  * Signs use a true minus so the figure doesn't jump.
  */
-function bigMoney(value) {
+function bigMoney(value, cur = currency()) {
   const number = formatMoney(Math.abs(value), { decimals: decimals() });
-  const cur = currency();
   return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num" data-count="${Math.abs(value)}">${esc(number)}</span>`;
 }
 
 /** Amount for a wallet card: smaller currency, true minus sign, no count-up animation inside sheets. */
-function cardMoney(value) {
-  const cur = currency();
+function cardMoney(value, cur = currency()) {
   return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num">${esc(formatMoney(Math.abs(value), { decimals: decimals() }))}</span>`;
 }
 
@@ -545,15 +617,15 @@ let carouselIndex = 0; // which card is centred (0 = All accounts); kept when th
  * copies and jumps back to the middle one when you stop), with a dot for each card.
  */
 function walletCards() {
-  const { balances } = computed();
+  const { balances, baseBalances } = computed();
   const wallets = state.data.wallets || [];
-  const worth = netWorth(balances);
+  const worth = netWorth(baseBalances);
   const specs = [{
     title: 'All accounts',
     kicker: `${wallets.length} wallet${wallets.length === 1 ? '' : 's'}`,
     caption: 'Net worth',
     amountHtml: bigMoney(worth.net),
-    footHtml: `Assets ${esc(money(worth.assets))} · Debts ${esc(money(worth.debts))}`,
+    footHtml: `<span class="foot-line">Assets ${esc(money(worth.assets))}</span><span class="foot-line">Debts ${esc(money(worth.debts))}</span>`,
     style: { colour: 'midnight', pattern: 'glass' },
     action: 'data-action="tab" data-tab="wallets"',
     label: 'All accounts: open the wallet list',
@@ -566,11 +638,11 @@ function walletCards() {
       title: w.name,
       kicker: w.type || 'Other',
       caption: balance < 0 ? 'Owed' : 'Balance',
-      amountHtml: bigMoney(balance),
+      amountHtml: bigMoney(balance, w.currency || currency()),
       footHtml: esc(style.label),
       style,
       action: `data-action="wallet" data-name="${esc(w.name)}"`,
-      label: `${w.name}: ${money(balance)}`,
+      label: `${w.name}: ${moneyFor(w.name, balance)}`,
       negative: balance < 0,
     });
   }
@@ -705,7 +777,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
           <span class="tx-detail">${detail}${tx.note ? ` · <em>${highlight(tx.note, query)}</em>` : ''}</span>
         </span>
         <span class="tx-side">
-          <span class="amount ${cls}">${sign}${esc(money(tx.amount))}</span>
+          <span class="amount ${cls}">${sign}${esc(moneyFor(tx.wallet, tx.amount))}</span>
           <span class="tx-time">${tx.id < 0 ? 'Saving…' : `#${tx.id}`} · ${time}</span>
         </span>
       </div>
@@ -724,7 +796,8 @@ function txListByDay(txs, { perspective = null, limit = state.limit, showMore = 
     days[days.length - 1].txs.push(tx);
   }
   let html = days.map((day) => {
-    const out = day.txs.reduce((sum, t) => sum + (t.type === EXPENSE ? t.amount : 0), 0);
+    const { baseNames } = computed();
+    const out = day.txs.reduce((sum, t) => sum + (t.type === EXPENSE && baseNames.has(t.wallet) ? t.amount : 0), 0);
     return `
       <h3 class="day"><span>${esc(day.label)}</span>${out ? `<span class="day-total">−${esc(money(out))}</span>` : ''}</h3>
       <ul class="card list">${day.txs.map((tx) => txRow(tx, { perspective, query })).join('')}</ul>`;
@@ -828,10 +901,10 @@ const goalsWithProgress = () => {
 // ---------- screens ----------
 
 function renderHome() {
-  const { txs } = computed();
+  const { txs, baseTxs } = computed();
   const now = new Date();
   const cycle = periodOf(now);
-  const monthTxs = inMonth(txs, cycle.year, cycle.month);
+  const monthTxs = inMonth(baseTxs, cycle.year, cycle.month);
   const plan = monthPlan(state.data.budgets, monthTxs, cycle.year, cycle.month, now);
   const goals = goalsWithProgress();
   const cycleName = monthLabel(cycle.year, cycle.month).split(' ')[0];
@@ -858,7 +931,7 @@ function renderHome() {
   for (const item of recurringItems().filter((r) => r.active)) {
     const dates = occurrences(item, end);
     dueCount += dates.length;
-    if (item.type === EXPENSE) dueOut += dates.length * item.amount;
+    if (item.type === EXPENSE && isBase(walletOf(item.wallet))) dueOut += dates.length * item.amount;
   }
   const scheduled = dueCount
     ? `<button class="card scheduled" data-action="open-view" data-view="recurring">
@@ -892,33 +965,71 @@ function renderHome() {
 }
 
 function renderWallets() {
-  const { balances } = computed();
+  const { balances, baseBalances } = computed();
   const wallets = state.data.wallets || [];
-  const worth = netWorth(balances);
-  const groups = groupWallets(wallets, balances);
-  const list = groups.map((group) => `
-    <h3 class="group-title"><span>${walletIcon(group.type)} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
-    <ul class="card list">
-      ${group.wallets.map((w) => `
+  const worth = netWorth(baseBalances);
+  const lines = (w, f = nb) => `<span class="hero-lines"><span>Assets ${f(w.assets)}</span><span>Debts ${f(w.debts)}</span></span>`;
+
+  // Wallets in other currencies are not added to the net worth; each currency gets its own card
+  const others = new Map();
+  for (const w of wallets.filter((x) => !isBase(x))) {
+    const key = String(w.currency).toUpperCase();
+    if (!others.has(key)) others.set(key, new Map());
+    others.get(key).set(w.name, balances.get(w.name) || 0);
+  }
+  const otherCards = [...others].map(([cur, map]) => {
+    const w = netWorth(map);
+    const f = (v) => `<span class="nowrap">${esc(formatMoney(v, { currency: cur, decimals: decimals() }))}</span>`;
+    return `
+      <section class="card worth-card">
+        <span class="overline">Net worth · ${esc(cur)}</span>
+        <p class="worth-amount ${w.net < 0 ? 'neg' : ''}">${bigMoney(w.net, cur)}</p>
+        ${lines(w, f)}
+        <span class="tile-sub">${[...map.keys()].map(esc).join(', ')}</span>
+      </section>`;
+  }).join('');
+
+  const row = (w, balance) => `
         <li>
           <button class="row" data-action="wallet" data-name="${esc(w.name)}">
             <span class="row-label">${esc(w.name)}</span>
-            <span class="row-value ${w.balance < 0 ? 'neg' : ''}">${esc(money(w.balance))}</span>
+            <span class="row-value ${balance < 0 ? 'neg' : ''}">${esc(moneyFor(w.name, balance))}</span>
             <span class="row-chevron">${ICONS.chevron}</span>
           </button>
-        </li>`).join('')}
+        </li>`;
+
+  let list;
+  if (state.reorder) {
+    // One flat list in card order, with up / down buttons
+    list = `
+      <div class="reorder-head"><span class="muted small">Move a wallet up or down. Home shows the cards in this order.</span><button class="link" data-action="done-reorder">Done</button></div>
+      <ul class="card list">
+        ${wallets.map((w, i) => `
+          <li class="reorder-row">
+            <span class="row-label">${esc(w.name)} <small class="muted">${esc(w.type || 'Other')}</small></span>
+            <button class="icon-btn move" data-action="move-wallet" data-name="${esc(w.name)}" data-dir="-1" aria-label="Move ${esc(w.name)} up" ${i === 0 ? 'disabled' : ''}>${icon('arrow-up')}</button>
+            <button class="icon-btn move" data-action="move-wallet" data-name="${esc(w.name)}" data-dir="1" aria-label="Move ${esc(w.name)} down" ${i === wallets.length - 1 ? 'disabled' : ''}>${icon('arrow-down')}</button>
+          </li>`).join('')}
+      </ul>`;
+  } else {
+    list = groupWallets(wallets, balances, currency()).map((group) => `
+    <h3 class="group-title"><span>${esc(group.type)}</span>${group.baseCount > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
+    <ul class="card list">
+      ${group.wallets.map((w) => row(w, w.balance)).join('')}
     </ul>`).join('');
+  }
   return `
     <section class="hero-block">
       <p class="overline">Net worth</p>
       <p class="display ${worth.net < 0 ? 'neg' : ''}">${bigMoney(worth.net)}</p>
-      <p class="hero-sub">Assets ${nb(worth.assets)} · Debts ${nb(worth.debts)}</p>
+      ${lines(worth)}
     </section>
+    ${otherCards}
     <section class="gap-lg">
       ${list || '<p class="empty">No wallets yet. Add your first one below.</p>'}
     </section>
     <button class="btn-secondary" data-action="add-wallet">+ New wallet</button>
-    <p class="hint small">Tap a wallet to see its card, adjust its balance, restyle it or remove it.</p>`;
+    <p class="hint small">Tap a wallet to see its card, adjust its balance, restyle it or remove it. Use ⋯ to reorder the wallets.</p>`;
 }
 
 function renderMore() {
@@ -963,6 +1074,7 @@ function renderRecurring() {
   let inc = 0;
   for (const item of items.filter((r) => r.active)) {
     const count = occurrences(item, horizon).length;
+    if (!isBase(walletOf(item.wallet))) continue;
     if (item.type === EXPENSE) out += count * item.amount;
     if (item.type === INCOME) inc += count * item.amount;
   }
@@ -981,7 +1093,7 @@ function renderRecurring() {
             <span class="tx-title">${esc(title)}</span>
             <span class="tx-detail">${esc(FREQUENCY_NAMES[item.frequency] || item.frequency)} · ${where}</span>
           </span>
-          <span class="tx-side"><span class="amount ${cls}">${sign}${esc(money(item.amount))}</span></span>
+          <span class="tx-side"><span class="amount ${cls}">${sign}${esc(moneyFor(item.wallet, item.amount))}</span></span>
         </button>
         <div class="goal-foot">
           <span class="muted small">${item.active ? `Next: ${esc(next)}` : 'Paused'}</span>
@@ -1015,7 +1127,7 @@ function renderPlan() {
 }
 
 function renderBudgets() {
-  const { txs } = computed();
+  const { baseTxs: txs } = computed();
   const { year, month } = state.month;
   const plan = monthPlan(state.data.budgets, inMonth(txs, year, month), year, month, new Date());
   if (!plan.budgets.length) {
@@ -1036,6 +1148,7 @@ function renderBudgets() {
       ${sectionTitle('By category', '<button class="link" data-action="edit-budgets">Edit</button>')}
       <ul class="card list padded">${sorted.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
     </section>
+    <button class="btn-secondary" data-action="new-budget">+ New budget</button>
     <p class="hint small">Budgets repeat every month. The Telegram bot uses the same limits.</p>`;
 }
 
@@ -1073,7 +1186,7 @@ function renderGoals() {
             <span class="row-chevron">${ICONS.chevron}</span>
           </button>
           <div class="goal-foot">
-            <span class="muted small">${g.wallet ? `${walletIcon(wallets.get(g.wallet))} Follows ${esc(g.wallet)}` : `${icon('pencil-simple')} Updated by you`}</span>
+            <span class="muted small">${g.wallet ? `Follows ${esc(g.wallet)}` : `${icon('pencil-simple')} Updated by you`}</span>
             ${g.wallet || g.reached ? '' : `<button class="pill-btn" data-action="add-money" data-name="${esc(g.name)}">+ Add money</button>`}
           </div>
         </li>`).join('')}
@@ -1083,7 +1196,7 @@ function renderGoals() {
 }
 
 function renderReports() {
-  const { txs } = computed();
+  const { baseTxs: txs } = computed();
   const { year, month } = state.month;
   const monthTxs = inMonth(txs, year, month);
   const totals = monthTotals(monthTxs);
@@ -1124,7 +1237,7 @@ function renderReports() {
       <div class="card tile"><span class="overline">Busiest day</span><strong class="serif tile-big">${insights.busiestDay ? esc(insights.busiestDay.name) : '—'}</strong>
         ${insights.busiestDay ? `<span class="tile-sub">${esc(money(insights.busiestDay.total))} spent</span>` : ''}</div>
       <div class="card tile"><span class="overline">Biggest expense</span><strong class="serif tile-big">${biggest ? nb(biggest.amount) : '—'}</strong>
-        ${biggest ? `<span class="tile-sub">${categoryIcon(biggest.category)} ${esc(biggest.note || biggest.subcategory || biggest.category)}</span>` : ''}</div>
+        ${biggest ? `<span class="tile-sub">${categoryIcon(biggest.category)} ${esc(biggest.subcategory || biggest.category)}</span>` : ''}</div>
       <div class="card tile"><span class="overline">Transactions</span><strong class="serif tile-big">${insights.count}</strong>
         ${totals.income > 0 ? `<span class="tile-sub">Saved ${Math.round(Math.max(0, totals.net) / totals.income * 100)}% of income</span>` : ''}</div>
     </section>` : '';
@@ -1272,6 +1385,8 @@ function renderWallet(name) {
   const { txs, balances } = computed();
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   const type = wallet?.type || 'Other';
+  const cur = walletCurrency(name);
+  const nbw = (value) => `<span class="nowrap">${esc(formatMoney(value, { currency: cur, decimals: decimals() }))}</span>`;
   const mine = txs.filter((tx) => tx.wallet === name || tx.toWallet === name);
   const cycle = periodOf(new Date());
   const flow = walletFlow(name, inMonth(mine, cycle.year, cycle.month));
@@ -1283,17 +1398,17 @@ function renderWallet(name) {
         title: name,
         kicker: type,
         caption: balance < 0 ? 'Owed' : 'Balance',
-        amountHtml: bigMoney(balance),
+        amountHtml: bigMoney(balance, cur),
         footHtml: esc(style.label),
         style,
         tag: 'div',
         negative: balance < 0,
       })}
       <div class="card wallet-flow">
-        ${flowStat('+', 'Income', nb(flow.moneyIn))}
-        ${flowStat('−', 'Expense', nb(flow.moneyOut))}
+        ${flowStat('+', 'Income', nbw(flow.moneyIn))}
+        ${flowStat('−', 'Expense', nbw(flow.moneyOut))}
       </div>
-      ${wallet ? `<p class="muted small wallet-opening">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
+      ${wallet ? `<p class="muted small wallet-opening">Opening balance ${esc(moneyFor(name, wallet.openingBalance))}</p>` : ''}
     </section>
     <section class="gap-lg">
       ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
@@ -1438,9 +1553,9 @@ function menuItems() {
   if (state.view === 'transactions') return [['open-filters', '', ICONS.filter, 'Filters'], ['export', '', ICONS.share, 'Export as CSV']];
   if (state.view === 'recurring') return [['new-recurring', '', ICONS.plus, 'New recurring item']];
   if (state.view !== null) return [];
-  if (state.tab === 'wallets') return [['add-wallet', '', ICONS.plus, 'New wallet']];
-  if (state.tab === 'budgets') return [['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal']];
-  if (state.tab === 'home') return [['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal'], ['cycle', '', ICONS.calendar, 'Pay cycle']];
+  if (state.tab === 'wallets') return [['add-wallet', '', ICONS.plus, 'New wallet'], ['reorder-wallets', '', icon('arrows-down-up'), state.reorder ? 'Done reordering' : 'Reorder wallets']];
+  if (state.tab === 'budgets') return [['new-budget', '', ICONS.plus, 'New budget'], ['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal']];
+  if (state.tab === 'home') return [['new-budget', '', ICONS.plus, 'New budget'], ['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal'], ['cycle', '', ICONS.calendar, 'Pay cycle']];
   return [];
 }
 
@@ -1554,6 +1669,7 @@ window.addEventListener('popstate', (event) => {
 function goTab(tab) {
   if (state.view !== null) history.back();
   state.view = null;
+  state.reorder = false;
   state.tab = tab;
   state.limit = 100;
   state.animate = true;
@@ -1683,6 +1799,16 @@ app.addEventListener('click', async (event) => {
     openFilters();
   } else if (action === 'dot') {
     showCard(Number(target.dataset.i));
+  } else if (action === 'reorder-wallets') {
+    state.reorder = !state.reorder;
+    render();
+  } else if (action === 'done-reorder') {
+    state.reorder = false;
+    render();
+  } else if (action === 'move-wallet') {
+    moveWallet(target.dataset.name, Number(target.dataset.dir));
+  } else if (action === 'new-budget') {
+    openNewBudget();
   } else if (action === 'edit-wallet') {
     openEditWallet(target.dataset.name);
   } else if (action === 'add-wallet') {

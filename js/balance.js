@@ -1,5 +1,5 @@
 // "Adjust balance" sheet: type what a wallet holds right now (same as /setbalance in Telegram).
-// The difference goes into the wallet's Opening Balance, so no transaction is added and reports don't change.
+// The difference is recorded as a "Balance adjustment" income/expense entry, so Cash Flow and Net Worth agree.
 import { formatNumber } from './calc.js';
 import { esc } from './ui.js';
 
@@ -62,7 +62,7 @@ export function openBalanceSheet({ wallet, type, current, money, onSave }) {
         </div>
         <input class="note-input big-input center" data-f="amount" inputmode="numeric" placeholder="0" value="${esc(grouped(amount))}" aria-label="New balance">
         <p class="center balance-change" aria-live="polite">${changeLine()}</p>
-        <p class="muted small field-help">Use this when the app and your real ${esc(wallet)} balance disagree. It adjusts the wallet's opening balance in your sheet: no transaction is added, so your monthly reports stay the same.</p>
+        <p class="muted small field-help">Use this when the app and your real ${esc(wallet)} balance disagree. The difference is saved as a “Balance adjustment” entry (income if the balance goes up, expense if it goes down), so Cash Flow and Net Worth stay in step.</p>
       </div>
       <div class="sheet-foot">
         ${error ? `<p class="form-status error" role="alert">${esc(error)}</p>` : ''}

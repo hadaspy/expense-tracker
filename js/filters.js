@@ -1,7 +1,7 @@
 // "Filters" sheet for the Transactions screen: date range, wallets, categories and amount.
 // The button at the bottom shows how many transactions match, updated as you pick.
 import { EMPTY_FILTERS, RANGES, formatNumber } from './calc.js';
-import { categoryIcon, esc, walletIcon } from './ui.js';
+import { categoryIcon, esc } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');
@@ -64,7 +64,7 @@ export function openFilterSheet({ filters, wallets, categories, count, onApply }
           </div>` : ''}
 
         <p class="field-label">Wallets</p>
-        <div class="chip-row wrap">${wallets.map((w) => chip(`${walletIcon(w.type)} ${esc(w.name)}`, 'wallet', w.name, f.wallets.includes(w.name))).join('')}</div>
+        <div class="chip-row wrap">${wallets.map((w) => chip(esc(w.name), 'wallet', w.name, f.wallets.includes(w.name))).join('')}</div>
 
         <p class="field-label">Categories</p>
         <div class="chip-row wrap">${categoryNames.map((c) => chip(`${categoryIcon(c)} ${esc(c)}`, 'category', c, f.categories.includes(c))).join('')}</div>

@@ -43,13 +43,17 @@ export function walletBalances(wallets, transactions) {
   return balances;
 }
 
-/** Wallets grouped by type with subtotals: [{type, total, wallets: [{name, type, balance}]}]. */
-export function groupWallets(wallets, balances) {
+/** True when a wallet uses the default currency (it has none of its own, or the same one). Only those count in net worth, cash flow and budgets. */
+export const isBaseWallet = (wallet, base = '') =>
+  !wallet?.currency || String(wallet.currency).toLowerCase() === String(base).toLowerCase();
+
+/** Wallets grouped by type; the subtotal counts only default-currency wallets: [{type, total, wallets: [{name, type, balance, currency, base}]}]. */
+export function groupWallets(wallets, balances, base = '') {
   const groups = new Map();
   for (const w of wallets) {
     const type = w.type || 'Other';
     if (!groups.has(type)) groups.set(type, []);
-    groups.get(type).push({ name: w.name, type, balance: balances.get(w.name) || 0 });
+    groups.get(type).push({ name: w.name, type, balance: balances.get(w.name) || 0, currency: w.currency || '', base: isBaseWallet(w, base) });
   }
   const rank = (type) => {
     const i = WALLET_TYPES.findIndex((t) => t.toLowerCase() === type.toLowerCase());
@@ -59,7 +63,8 @@ export function groupWallets(wallets, balances) {
     .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
     .map(([type, list]) => ({
       type,
-      total: list.reduce((sum, w) => sum + w.balance, 0),
+      total: list.filter((w) => w.base).reduce((sum, w) => sum + w.balance, 0),
+      baseCount: list.filter((w) => w.base).length,
       wallets: list,
     }));
 }

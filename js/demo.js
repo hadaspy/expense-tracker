@@ -13,6 +13,7 @@ export function demoData() {
     { name: 'E-wallet', openingBalance: 800000, type: 'E-wallet', card: 'ocean|grid|' },
     { name: 'Credit Card', openingBalance: -1200000, type: 'Credit Card', card: 'graphite|glass|•••• 8841|mastercard' },
     { name: 'Stocks', openingBalance: 5000000, type: 'Stock', card: 'violet|orbs|' },
+    { name: 'USD Account', openingBalance: 1500, type: 'Bank', card: 'ocean|waves||mastercard', currency: 'USD' },
   ];
   const categories = {
     Expense: {
@@ -65,6 +66,8 @@ export function demoData() {
   add(20, 18, { type: 'Transfer', amount: 1500000, wallet: 'Main Bank', toWallet: 'Credit Card', note: 'card bill' });
   add(15, 15, { type: 'Income', amount: 320000, wallet: 'Stocks', category: 'Investment', subcategory: 'Dividends' });
   add(5, 19, { type: 'Transfer', amount: 500000, wallet: 'Main Bank', toWallet: 'E-wallet', note: 'top up' });
+  add(9, 10, { type: 'Expense', amount: 120, wallet: 'USD Account', category: 'Shopping', subcategory: 'Electronics', note: 'cable and adapter' });
+  add(4, 11, { type: 'Income', amount: 800, wallet: 'USD Account', category: 'Salary', note: 'freelance payment' });
   add(30, 8, { type: 'Transfer', amount: 1000000, wallet: 'Main Bank', toWallet: 'Cash', note: 'ATM' });
   add(12, 8, { type: 'Transfer', amount: 1000000, wallet: 'Main Bank', toWallet: 'Cash', note: 'ATM' });
 

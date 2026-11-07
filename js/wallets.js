@@ -1,6 +1,6 @@
 // "New wallet" sheet: name, type and what it holds today (its opening balance).
 import { WALLET_TYPES, formatNumber } from './calc.js';
-import { esc, walletIcon } from './ui.js';
+import { esc } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');
@@ -13,9 +13,9 @@ const grouped = (n) => (n === null ? '' : formatNumber(n));
  * @param {string[]} o.existing  names already in use (case-insensitive check)
  * @param {Function} o.onSave    async ({name, type, openingBalance}) => void
  */
-export function openWalletSheet({ existing = [], wallet = null, onSave }) {
+export function openWalletSheet({ existing = [], wallet = null, defaultCurrency = '', onSave }) {
   const editing = !!wallet;
-  const state = { name: wallet?.name || '', type: wallet?.type || 'Bank', amount: null, owe: false };
+  const state = { name: wallet?.name || '', type: wallet?.type || 'Bank', currency: wallet?.currency || '', amount: null, owe: false };
   let busy = false;
   let error = '';
 
@@ -47,8 +47,13 @@ export function openWalletSheet({ existing = [], wallet = null, onSave }) {
         </label>
         <p class="field-label">Type</p>
         <div class="chip-row wrap">
-          ${WALLET_TYPES.map((t) => `<button type="button" class="chip ${state.type === t ? 'active' : ''}" data-act="type" data-v="${esc(t)}" aria-pressed="${state.type === t}">${walletIcon(t)} ${esc(t)}</button>`).join('')}
+          ${WALLET_TYPES.map((t) => `<button type="button" class="chip ${state.type === t ? 'active' : ''}" data-act="type" data-v="${esc(t)}" aria-pressed="${state.type === t}">${esc(t)}</button>`).join('')}
         </div>
+        <label class="field">
+          <span class="field-label">Currency <span class="muted">(optional)</span></span>
+          <input class="note-input" data-f="currency" maxlength="6" placeholder="${esc(defaultCurrency ? `Default: ${defaultCurrency}` : 'Default currency')}" value="${esc(state.currency)}" autocomplete="off" autocapitalize="characters">
+          <span class="muted small field-help">Leave empty to use the default currency. A wallet in another currency (say USD) is left out of net worth, cash flow and budgets, and gets its own net worth card in the Wallets tab.</span>
+        </label>
         ${editing ? `<p class="muted small field-help">Renaming updates all its transactions, recurring items and goals. To change what it holds, use Adjust balance.</p>` : `        <p class="field-label">What does it hold today?</p>
         <div class="segmented two balance-sign" role="radiogroup" aria-label="Balance kind">
           <button type="button" class="seg ${state.owe ? '' : 'active'}" data-act="sign" data-v="have" role="radio" aria-checked="${!state.owe}">I have</button>
@@ -84,7 +89,8 @@ export function openWalletSheet({ existing = [], wallet = null, onSave }) {
       error = '';
       render();
       try {
-        await onSave(editing ? { name, type: state.type } : { name, type: state.type, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
+        const currency = state.currency.trim();
+        await onSave(editing ? { name, type: state.type, currency } : { name, type: state.type, currency, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
         close();
       } catch (e) {
         busy = false;
@@ -98,6 +104,7 @@ export function openWalletSheet({ existing = [], wallet = null, onSave }) {
   backdrop.addEventListener('input', (event) => {
     const f = event.target.dataset.f;
     if (f === 'name') state.name = event.target.value;
+    if (f === 'currency') state.currency = event.target.value.slice(0, 6);
     if (f === 'amount') {
       state.amount = digits(event.target.value);
       event.target.value = grouped(state.amount);

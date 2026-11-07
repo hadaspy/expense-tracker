@@ -66,6 +66,7 @@ export const icon = (name, cls = '') =>
 
 // First match wins, so "Transport" is checked before "sport"
 const CATEGORY_RULES = [
+  [/adjust/, 'scales'],
   [/transfer/, 'arrows-left-right'],
   [/groc|supermarket/, 'shopping-cart'],
   [/coffee|cafe/, 'coffee'],
@@ -113,9 +114,3 @@ export const categoryIcon = (name) => {
   const hit = CATEGORY_RULES.find(([re]) => re.test(n));
   return icon(hit ? hit[1] : 'tag');
 };
-
-const WALLET_ICONS = {
-  bank: 'bank', cash: 'money', 'e-wallet': 'device-mobile', 'credit card': 'credit-card',
-  savings: 'piggy-bank', investment: 'chart-line-up', stock: 'chart-line-up',
-};
-export const walletIcon = (type) => icon(WALLET_ICONS[String(type || '').toLowerCase()] || 'wallet');
