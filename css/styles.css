@@ -228,6 +228,10 @@ section { margin-top: 20px; }
 .hero-split > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .hero-split strong { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .hero-block > .small { margin: 14px 0 0; }
+.wallet-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
+.balance-sign { margin: 14px 0 12px; }
+.balance-change { margin: 10px 0 0; font-size: 15px; color: var(--muted); }
+.balance-change strong { font-variant-numeric: tabular-nums; }
 .report-hero .delta { font-size: 12px; font-weight: 600; }
 
 /* ---------- bento tiles ---------- */

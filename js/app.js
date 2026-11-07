@@ -6,6 +6,7 @@ import {
   goalProgress, groupWallets, inMonth, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
   prepareTransactions, rangeBounds, spendingParts, summarize, timeAgo, toCsv, walletBalances, walletFlow, walletIcon,
 } from './calc.js';
+import { openBalanceSheet } from './balance.js';
 import { openBudgetSheet } from './budgets.js';
 import { cashFlowChart, readout, segmentedBar } from './charts.js';
 import { demoData } from './demo.js';
@@ -220,6 +221,25 @@ async function deleteGoal(name) {
     : (await apiPost({ action: 'deleteGoal', name })).goals;
   setData({ goals });
   toast('Goal deleted');
+}
+
+async function saveBalance(name, balance) {
+  let wallets;
+  if (isDemo) {
+    const current = computed().balances.get(name) || 0;
+    wallets = state.data.wallets.map((w) => (w.name === name ? { ...w, openingBalance: w.openingBalance + balance - current } : w));
+  } else {
+    const result = await apiPost({ action: 'setBalance', wallet: name, balance });
+    wallets = state.data.wallets.map((w) => (w.name === name ? { ...w, openingBalance: result.wallet.openingBalance } : w));
+  }
+  setData({ wallets });
+  toast(`${name} balance updated`);
+}
+
+function openBalance(name) {
+  const wallet = (state.data.wallets || []).find((w) => w.name === name);
+  if (!wallet) return;
+  openBalanceSheet({ wallet: name, type: wallet.type, current: computed().balances.get(name) || 0, money, onSave: (b) => saveBalance(name, b) });
 }
 
 const findGoal = (name) => (state.data.goals || []).find((g) => g.name === name);
@@ -771,7 +791,11 @@ function renderWallet(name) {
         <div><span class="overline">In this month</span><strong class="pos">${nb(flow.moneyIn)}</strong></div>
         <div><span class="overline">Out this month</span><strong>${nb(flow.moneyOut)}</strong></div>
       </div>
-      ${wallet ? `<p class="muted small">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
+      ${wallet ? `
+      <div class="wallet-actions">
+        <span class="muted small">Opening balance ${esc(money(wallet.openingBalance))}</span>
+        <button class="pill-btn" data-action="adjust-balance" data-name="${esc(name)}">Adjust balance</button>
+      </div>` : ''}
     </section>
     <section class="gap-lg">
       ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
@@ -1055,6 +1079,8 @@ app.addEventListener('click', async (event) => {
     openEntry();
   } else if (action === 'edit-budgets') {
     openBudgets();
+  } else if (action === 'adjust-balance') {
+    openBalance(target.dataset.name);
   } else if (action === 'add-goal') {
     openGoal();
   } else if (action === 'edit-goal') {
