@@ -21,7 +21,33 @@ export const ICONS = {
   right: svg('<path d="M9 6l6 6-6 6"/>'),
   backspace: svg('<path d="M21 5H9l-6 7 6 7h12z"/><path d="M17 9.5l-5 5M12 9.5l5 5"/>'),
   trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  filter: svg('<path d="M4 6h16M7 12h10M10 18h4"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+  share: svg('<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>'),
+  goal: svg('<path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/>'),
 };
+
+/**
+ * Escapes `text` and wraps every case-insensitive match of `query` in <mark>.
+ * Matching runs on the raw text, so "&" in a query can never break the HTML.
+ */
+export function highlight(text, query) {
+  const raw = String(text ?? '');
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return esc(raw);
+  let html = '';
+  let from = 0;
+  const lower = raw.toLowerCase();
+  for (let at = lower.indexOf(q); at !== -1; at = lower.indexOf(q, from)) {
+    html += esc(raw.slice(from, at)) + `<mark>${esc(raw.slice(at, at + q.length))}</mark>`;
+    from = at + q.length;
+  }
+  return html + esc(raw.slice(from));
+}
+
+/** True when the phone asks for less motion (Settings → Accessibility → Motion). */
+export const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 const CATEGORY_ICONS = {
   'food & drinks': '🍽️', transport: '🚗', shopping: '🛍️', 'bills & utilities': '🧾', housing: '🏠',

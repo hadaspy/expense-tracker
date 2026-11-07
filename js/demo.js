@@ -69,5 +69,15 @@ export function demoData() {
   add(12, 8, { type: 'Transfer', amount: 1000000, wallet: 'Main Bank', toWallet: 'Cash', note: 'ATM' });
 
   transactions.sort((a, b) => a.date.localeCompare(b.date)).forEach((tx, i) => (tx.id = i + 1));
-  return { sheet: 'Sample data', wallets, categories, budgets, transactions };
+  const pad = (n) => String(n).padStart(2, '0');
+  const ahead = (months) => {
+    const d = new Date(now.getFullYear(), now.getMonth() + months + 1, 0); // end of that month
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const goals = [
+    { name: 'Emergency fund', target: 30000000, wallet: 'Savings Bank', saved: 0, targetDate: '' },
+    { name: 'New laptop', target: 20000000, wallet: '', saved: 6500000, targetDate: ahead(7) },
+    { name: 'Holiday', target: 8000000, wallet: '', saved: 2000000, targetDate: ahead(10) },
+  ];
+  return { sheet: 'Sample data', wallets, categories, budgets, goals, transactions };
 }

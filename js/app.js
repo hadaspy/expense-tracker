@@ -1,22 +1,24 @@
 // Expense Tracker web app — reads and writes your Google Sheet through the Apps Script API.
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
-  EXPENSE, INCOME, TRANSFER,
-  byCategory, cashFlow, categorySlots, dayLabel, formatMoney, groupWallets, inMonth, monthInsights,
-  monthLabel, monthPlan, monthTotals, netWorth, prepareTransactions, spendingParts, timeAgo,
-  walletBalances, walletFlow, walletIcon,
+  EMPTY_FILTERS, EXPENSE, INCOME, RANGES, TRANSFER,
+  activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatMoney,
+  goalProgress, groupWallets, inMonth, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
+  prepareTransactions, rangeBounds, spendingParts, summarize, timeAgo, toCsv, walletBalances, walletFlow, walletIcon,
 } from './calc.js';
 import { openBudgetSheet } from './budgets.js';
 import { cashFlowChart, readout, segmentedBar } from './charts.js';
 import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
-import { ICONS, categoryIcon, esc } from './ui.js';
+import { openFilterSheet } from './filters.js';
+import { openAddMoneySheet, openGoalSheet } from './goals.js';
+import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '2.0.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'transactions', 'budgets', 'reports'];
-const TAB_TITLES = { home: 'Home', transactions: 'Transactions', budgets: 'Budgets', reports: 'Reports' };
+const TAB_TITLES = { home: 'Home', transactions: 'Transactions', budgets: 'Plan', reports: 'Reports' };
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 
@@ -38,12 +40,14 @@ const isDemo = new URLSearchParams(location.search).has('demo');
 let settings = storage.get(KEYS.settings) || {};
 const cached = isDemo ? null : storage.get(KEYS.cache);
 const today = new Date();
+const freshFilters = () => ({ ...EMPTY_FILTERS, wallets: [], categories: [] });
 
 const state = {
   tab: 'home',
+  plan: 'budgets',            // Plan tab: 'budgets' | 'goals'
   view: null,                 // null | 'settings' | { wallet: name }
   month: { year: today.getFullYear(), month: today.getMonth() },
-  filter: 'all',              // all | Expense | Income | Transfer
+  filters: freshFilters(),    // Transactions: type chips + the Filters sheet
   search: '',
   expanded: new Set(),        // expanded categories in reports
   limit: 100,                 // transactions shown before "Show more"
@@ -51,10 +55,12 @@ const state = {
   fetchedAt: isDemo ? Date.now() : cached?.fetchedAt || null,
   loading: false,
   error: null,
+  animate: true,              // play the entrance animation on the next render (navigation only)
 };
 
 const decimals = () => Number(settings.decimals) || 0;
-const money = (value) => formatMoney(value, { currency: settings.currency || (isDemo ? 'Rp' : ''), decimals: decimals() });
+const currency = () => settings.currency || (isDemo ? 'Rp' : '');
+const money = (value) => formatMoney(value, { currency: currency(), decimals: decimals() });
 
 let memo = null;
 /** Transactions with parsed dates + wallet balances, recalculated only when the data changes. */
@@ -117,14 +123,15 @@ async function refresh() {
   }
 }
 
-// ---------- saving / deleting (used by the entry sheet and swipe-to-delete) ----------
+// ---------- saving / deleting ----------
 
 /** Applies a change to the local copy right away, so the app updates without waiting for a reload. */
-function applyLocal(change) {
-  state.data = { ...state.data, transactions: change([...(state.data.transactions || [])]) };
+function setData(patch) {
+  state.data = { ...state.data, ...patch };
   if (!isDemo) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
   render();
 }
+const applyLocal = (change) => setData({ transactions: change([...(state.data.transactions || [])]) });
 
 async function saveTransaction(transaction, id = null) {
   if (id) {
@@ -164,9 +171,7 @@ function openEntry(id = null) {
 
 async function saveBudgets(budgets) {
   const saved = isDemo ? budgets : (await apiPost({ action: 'setBudgets', budgets })).budgets;
-  state.data = { ...state.data, budgets: saved };
-  if (!isDemo) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
-  render();
+  setData({ budgets: saved });
   toast('Budgets saved');
 }
 
@@ -186,6 +191,43 @@ function openBudgets() {
     money,
     onSave: saveBudgets,
   });
+}
+
+// Goals: only these fields go to the sheet (progress numbers are calculated, not stored)
+const goalFields = (g) => ({ name: g.name, target: g.target, wallet: g.wallet || '', saved: g.wallet ? 0 : g.saved || 0, targetDate: g.targetDate || '' });
+
+async function saveGoal(goal, original) {
+  const clean = goalFields(goal);
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if ((state.data.goals || []).some((g) => same(g.name, clean.name) && !(original && same(g.name, original)))) {
+    throw new Error(`A goal called “${clean.name}” already exists.`);
+  }
+  let goals;
+  if (isDemo) {
+    goals = [...(state.data.goals || [])];
+    const at = goals.findIndex((g) => g.name === (original || clean.name));
+    if (at === -1) goals.push(clean); else goals[at] = clean;
+  } else {
+    goals = (await apiPost({ action: 'setGoal', goal: clean, original })).goals;
+  }
+  setData({ goals });
+  toast(original ? 'Goal updated' : 'Goal created');
+}
+
+async function deleteGoal(name) {
+  const goals = isDemo
+    ? (state.data.goals || []).filter((g) => g.name !== name)
+    : (await apiPost({ action: 'deleteGoal', name })).goals;
+  setData({ goals });
+  toast('Goal deleted');
+}
+
+const findGoal = (name) => (state.data.goals || []).find((g) => g.name === name);
+
+function openGoal(name = null) {
+  if (!state.data) return;
+  const goal = name ? findGoal(name) : null;
+  openGoalSheet({ goal, wallets: state.data.wallets || [], money, onSave: saveGoal, onDelete: goal ? deleteGoal : null });
 }
 
 function toast(message) {
@@ -208,18 +250,28 @@ function amountClass(tx, perspective) {
   return 'neutral';
 }
 
-function txRow(tx, perspective = null) {
+/**
+ * A big serif amount: smaller currency symbol, the number counts up on arrival (see countUp()).
+ * Signs use a true minus so the figure doesn't jump.
+ */
+function bigMoney(value) {
+  const number = formatMoney(Math.abs(value), { decimals: decimals() });
+  const cur = currency();
+  return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num" data-count="${Math.abs(value)}">${esc(number)}</span>`;
+}
+
+function txRow(tx, { perspective = null, query = '' } = {}) {
   const cls = amountClass(tx, perspective);
-  const sign = cls === 'neg' ? '-' : cls === 'pos' ? '+' : '';
+  const sign = cls === 'neg' ? '−' : cls === 'pos' ? '+' : '';
   let icon, title, detail;
   if (tx.type === TRANSFER) {
     icon = '🔁';
-    title = 'Transfer';
-    detail = `${tx.wallet} → ${tx.toWallet}`;
+    title = esc('Transfer');
+    detail = `${highlight(tx.wallet, query)} → ${highlight(tx.toWallet, query)}`;
   } else {
     icon = categoryIcon(tx.category);
-    title = tx.subcategory || tx.category || 'Uncategorized';
-    detail = (tx.subcategory ? `${tx.category} · ` : '') + tx.wallet;
+    title = highlight(tx.subcategory || tx.category || 'Uncategorized', query);
+    detail = (tx.subcategory ? `${highlight(tx.category, query)} · ` : '') + highlight(tx.wallet, query);
   }
   const time = tx.when.toTimeString().slice(0, 5);
   // Tap to edit; swipe left to reveal Delete
@@ -229,8 +281,8 @@ function txRow(tx, perspective = null) {
       <div class="tx" data-action="edit-tx" data-id="${tx.id}" role="button" tabindex="0">
         <span class="tx-icon ${tx.type.toLowerCase()}">${icon}</span>
         <span class="tx-main">
-          <span class="tx-title">${esc(title)}</span>
-          <span class="tx-detail">${esc(detail)}${tx.note ? ` · <em>${esc(tx.note)}</em>` : ''}</span>
+          <span class="tx-title">${title}</span>
+          <span class="tx-detail">${detail}${tx.note ? ` · <em>${highlight(tx.note, query)}</em>` : ''}</span>
         </span>
         <span class="tx-side">
           <span class="amount ${cls}">${sign}${esc(money(tx.amount))}</span>
@@ -240,21 +292,23 @@ function txRow(tx, perspective = null) {
     </li>`;
 }
 
-function txListByDay(txs, { perspective = null, limit = state.limit, showMore = true } = {}) {
+/** Transactions grouped by day; each day shows what went out that day. */
+function txListByDay(txs, { perspective = null, limit = state.limit, showMore = true, query = '' } = {}) {
   if (!txs.length) return '<p class="empty">No transactions found.</p>';
   const now = new Date();
-  let html = '';
-  let currentDay = null;
-  txs.slice(0, limit).forEach((tx) => {
+  const shown = txs.slice(0, limit);
+  const days = [];
+  for (const tx of shown) {
     const label = dayLabel(tx.when, now);
-    if (label !== currentDay) {
-      if (currentDay !== null) html += '</ul>';
-      html += `<h3 class="day">${esc(label)}</h3><ul class="card list">`;
-      currentDay = label;
-    }
-    html += txRow(tx, perspective);
-  });
-  html += '</ul>';
+    if (days[days.length - 1]?.label !== label) days.push({ label, txs: [] });
+    days[days.length - 1].txs.push(tx);
+  }
+  let html = days.map((day) => {
+    const out = day.txs.reduce((sum, t) => sum + (t.type === EXPENSE ? t.amount : 0), 0);
+    return `
+      <h3 class="day"><span>${esc(day.label)}</span>${out ? `<span class="day-total">−${esc(money(out))}</span>` : ''}</h3>
+      <ul class="card list">${day.txs.map((tx) => txRow(tx, { perspective, query })).join('')}</ul>`;
+  }).join('');
   if (showMore && txs.length > limit) {
     html += `<button class="btn-secondary" data-action="more">Show more (${txs.length - limit} left)</button>`;
   }
@@ -295,49 +349,101 @@ function monthNav() {
     </div>`;
 }
 
-/** The big "left to spend" card (Home and Budgets). */
-function planCard(plan, { compact = false } = {}) {
+const sectionTitle = (title, action = '') => `<h2 class="section-title"><span>${title}</span>${action}</h2>`;
+
+/** The editorial "left to spend" block: big serif number on the paper, no card (Home and Plan). */
+function planHero(plan, monthName, { split = true } = {}) {
   const over = plan.left < 0;
   const label = plan.mode === 'budget' ? 'Left to spend' : 'Left this month';
   const sub = plan.mode === 'budget'
     ? `of ${money(plan.total)} budgeted`
     : `income ${money(plan.income)} − spending ${money(plan.expense)}`;
   const perDay = over
-    ? `<span class="neg">Over by ${esc(money(-plan.left))}</span>`
+    ? `<span class="neg">Over by ${nb(-plan.left)}</span>`
     : plan.daysLeft > 0 && plan.left > 0
-      ? `≈ <strong>${esc(money(plan.perDay))}</strong> per day · ${plan.daysLeft} day${plan.daysLeft === 1 ? '' : 's'} left`
+      ? `≈ <strong>${nb(plan.perDay)}</strong> a day · ${plan.daysLeft} day${plan.daysLeft === 1 ? '' : 's'} left`
       : '';
   return `
-    <section class="hero card">
-      <p class="hero-label">${label}</p>
-      <p class="hero-value ${over ? 'neg' : ''}">${esc(money(plan.left))}</p>
+    <section class="hero-block">
+      <p class="overline">${label} · ${esc(monthName)}</p>
+      <p class="display ${over ? 'neg' : ''}">${bigMoney(plan.left)}</p>
       <p class="hero-sub">${esc(sub)}</p>
-      ${plan.total > 0 || plan.used > 0 ? bar(plan.fraction, budgetClass(plan.fraction)) : ''}
+      ${plan.total > 0 || plan.used > 0 ? bar(plan.fraction, `thick ${budgetClass(plan.fraction)}`) : ''}
       ${perDay ? `<p class="hero-perday">${perDay}</p>` : ''}
-      ${compact ? '' : `
+      ${split ? `
       <div class="hero-split">
-        <div><span class="dot pos"></span>In<strong class="pos">${esc(money(plan.income))}</strong></div>
-        <div><span class="dot neg"></span>Out<strong class="neg">${esc(money(plan.expense))}</strong></div>
-      </div>`}
+        <div><span class="overline">Money in</span><strong class="pos">${nb(plan.income)}</strong></div>
+        <div><span class="overline">Money out</span><strong>${nb(plan.expense)}</strong></div>
+      </div>` : ''}
     </section>`;
 }
+
+/** Progress ring for a goal (single series: the number in the middle names it, no legend needed). */
+function ring(fraction, cls = '') {
+  const pct = Math.round(fraction * 100);
+  return `
+    <span class="ring ${cls}" role="img" aria-label="${pct}% saved">
+      <svg viewBox="0 0 56 56" aria-hidden="true">
+        <circle class="ring-track" cx="28" cy="28" r="24" pathLength="100"/>
+        <circle class="ring-fill" cx="28" cy="28" r="24" pathLength="100" stroke-dasharray="100" stroke-dashoffset="${100 - pct}"/>
+      </svg>
+      <span class="ring-label">${pct}<small>%</small></span>
+    </span>`;
+}
+
+function goalPace(g) {
+  if (g.reached) return '<span class="pos">Reached 🎉</span>';
+  const date = g.targetDate ? new Date(`${g.targetDate}T12:00`).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) : '';
+  if (g.overdue) return `<span class="warn">Target date passed</span> · ${nb(g.remaining)} to go`;
+  if (g.perMonth) return `≈ ${nb(g.perMonth)} a month until ${esc(date)}`;
+  return `${nb(g.remaining)} to go`;
+}
+
+const goalsWithProgress = () => {
+  const { balances } = computed();
+  const now = new Date();
+  return (state.data.goals || []).map((g) => goalProgress(g, balances, now));
+};
 
 // ---------- screens ----------
 
 function renderHome() {
   const { txs, balances } = computed();
   const now = new Date();
-  const plan = monthPlan(state.data.budgets, inMonth(txs, now.getFullYear(), now.getMonth()), now.getFullYear(), now.getMonth(), now);
+  const monthTxs = inMonth(txs, now.getFullYear(), now.getMonth());
+  const plan = monthPlan(state.data.budgets, monthTxs, now.getFullYear(), now.getMonth(), now);
+  const insights = monthInsights(txs, now.getFullYear(), now.getMonth(), now);
   const groups = groupWallets(state.data.wallets || [], balances);
   const worth = netWorth(balances);
+  const goals = goalsWithProgress();
+
+  const change = insights.expenseChange;
+  const prevName = insights.previousMonth.toLocaleDateString('en-GB', { month: 'short' });
+  const delta = change === null || !isFinite(change) ? '<span class="tile-sub">this month</span>' : `
+    <span class="tile-sub wrap"><span class="${change > 0 ? 'neg' : 'pos'}">${change > 0 ? '▲' : '▼'} ${Math.abs(Math.round(change * 100))}%</span> vs same days of ${esc(prevName)}</span>`;
+
+  const goalTile = goals.length
+    ? `<button class="card tile wide goals-tile" data-action="plan" data-plan="goals">
+        <span class="tile-head"><span class="overline">Goals</span><span class="link">See all</span></span>
+        ${goals.slice(0, 2).map((g) => `
+          <span class="mini-goal">
+            <span class="mini-goal-line"><span class="serif">${esc(g.name)}</span><span>${Math.round(g.fraction * 100)}%</span></span>
+            ${bar(g.fraction, g.reached ? 'pos' : 'accent')}
+          </span>`).join('')}
+      </button>`
+    : `<button class="card tile wide goals-tile empty-goal" data-action="add-goal">
+        <span class="overline">Goals</span>
+        <span class="serif tile-big">Start saving for something</span>
+        <span class="tile-sub">Emergency fund, a laptop, a trip… <span class="link">Create a goal →</span></span>
+      </button>`;
 
   const topBudgets = [...plan.budgets].sort((a, b) => b.fraction - a.fraction).slice(0, 3);
   const budgetsHtml = topBudgets.length
-    ? `<section>
-        <h2 class="section-title"><span>Budgets</span><button class="link" data-action="tab" data-tab="budgets">See all</button></h2>
+    ? `<section class="gap-lg">
+        ${sectionTitle('Budgets', '<button class="link" data-action="plan" data-plan="budgets">See all</button>')}
         <ul class="card list padded">${topBudgets.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
       </section>`
-    : `<p class="hint">💡 Set monthly budgets to see how much you can spend per day. <button class="link" data-action="edit-budgets">Set budgets</button></p>`;
+    : `<p class="hint">Set monthly budgets to see how much you can spend per day. <button class="link" data-action="edit-budgets">Set budgets</button></p>`;
 
   const walletGroups = groups.map((group) => `
     <h3 class="group-title"><span>${group.icon} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
@@ -353,21 +459,46 @@ function renderHome() {
     </ul>`).join('');
 
   return `
-    ${planCard(plan)}
-    ${budgetsHtml}
-    <section>
-      <h2 class="section-title"><span>Accounts</span></h2>
-      <div class="card networth">
-        <div><span class="muted">Net worth</span><strong class="${worth.net < 0 ? 'neg' : ''}">${esc(money(worth.net))}</strong></div>
-        <div><span class="muted">Assets</span><strong>${esc(money(worth.assets))}</strong></div>
-        <div><span class="muted">Debts</span><strong class="${worth.debts ? 'neg' : ''}">${esc(money(worth.debts))}</strong></div>
+    ${planHero(plan, now.toLocaleDateString('en-GB', { month: 'long' }), { split: false })}
+    <section class="bento">
+      <div class="card tile">
+        <span class="overline">Spent</span>
+        <strong class="tile-big serif">${nb(plan.expense)}</strong>
+        ${delta}
       </div>
-      ${walletGroups || '<p class="empty">No wallets yet. Add them in the Wallets tab of your sheet.</p>'}
+      <div class="card tile">
+        <span class="overline">Earned</span>
+        <strong class="tile-big serif">${nb(plan.income)}</strong>
+        <span class="tile-sub">this month</span>
+      </div>
+      <button class="card tile wide" data-action="scroll" data-target="accounts">
+        <span class="tile-head"><span class="overline">Net worth</span><span class="row-chevron">${ICONS.chevron}</span></span>
+        <strong class="tile-big serif ${worth.net < 0 ? 'neg' : ''}">${nb(worth.net)}</strong>
+        <span class="tile-sub">Assets ${nb(worth.assets)} · Debts <span class="${worth.debts ? 'neg' : ''}">${nb(worth.debts)}</span></span>
+      </button>
+      ${goalTile}
     </section>
-    <section>
-      <h2 class="section-title"><span>Recent</span><button class="link" data-action="tab" data-tab="transactions">See all</button></h2>
+    ${budgetsHtml}
+    <section class="gap-xl">
+      ${sectionTitle('Recent', '<button class="link" data-action="tab" data-tab="transactions">See all</button>')}
       ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
+    </section>
+    <section class="gap-xl" id="accounts">
+      ${sectionTitle('Accounts')}
+      ${walletGroups || '<p class="empty">No wallets yet. Add them in the Wallets tab of your sheet.</p>'}
     </section>`;
+}
+
+function planSwitch() {
+  return `
+    <div class="segmented two" role="tablist">
+      ${[['budgets', 'Budgets'], ['goals', 'Goals']].map(([v, label]) => `
+        <button type="button" role="tab" aria-selected="${state.plan === v}" class="seg ${state.plan === v ? 'active' : ''}" data-action="plan" data-plan="${v}">${label}</button>`).join('')}
+    </div>`;
+}
+
+function renderPlan() {
+  return planSwitch() + (state.plan === 'goals' ? renderGoals() : renderBudgets());
 }
 
 function renderBudgets() {
@@ -387,12 +518,55 @@ function renderBudgets() {
   const sorted = [...plan.budgets].sort((a, b) => b.fraction - a.fraction);
   return `
     ${monthNav()}
-    ${planCard(plan, { compact: true })}
-    <section>
-      <h2 class="section-title"><span>By category</span><button class="link" data-action="edit-budgets">Edit</button></h2>
+    ${planHero(plan, monthLabel(year, month).split(' ')[0], { split: false })}
+    <section class="gap-lg">
+      ${sectionTitle('By category', '<button class="link" data-action="edit-budgets">Edit</button>')}
       <ul class="card list padded">${sorted.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
     </section>
     <p class="hint small">Budgets repeat every month. The Telegram bot uses the same limits.</p>`;
+}
+
+function renderGoals() {
+  const goals = goalsWithProgress();
+  if (!goals.length) {
+    return `
+      <section class="card empty-card">
+        <p class="empty-icon">🏁</p>
+        <h2>Save for what matters</h2>
+        <p class="muted">Set a target, and optionally a date. Link a savings wallet and progress follows its balance, or add money by hand. You'll see how much to put aside each month.</p>
+        <button class="btn-primary" data-action="add-goal">Create a goal</button>
+      </section>`;
+  }
+  const saved = goals.reduce((sum, g) => sum + Math.min(g.current, g.target), 0);
+  const target = goals.reduce((sum, g) => sum + g.target, 0);
+  const wallets = new Map((state.data.wallets || []).map((w) => [w.name, w.type]));
+  return `
+    <section class="hero-block">
+      <p class="overline">Saved towards goals</p>
+      <p class="display">${bigMoney(saved)}</p>
+      <p class="hero-sub">of ${nb(target)} across ${goals.length} goal${goals.length === 1 ? '' : 's'}</p>
+      ${bar(target ? saved / target : 0, 'thick accent')}
+    </section>
+    <ul class="goal-list gap-lg">
+      ${goals.map((g) => `
+        <li class="card goal">
+          <button class="goal-main" data-action="edit-goal" data-name="${esc(g.name)}" aria-label="Edit ${esc(g.name)}">
+            ${ring(g.fraction, g.reached ? 'done' : '')}
+            <span class="goal-text">
+              <span class="goal-name">${esc(g.name)}</span>
+              <span class="goal-amounts">${nb(g.current)} <span class="muted">of ${nb(g.target)}</span></span>
+              <span class="goal-pace">${goalPace(g)}</span>
+            </span>
+            <span class="row-chevron">${ICONS.chevron}</span>
+          </button>
+          <div class="goal-foot">
+            <span class="muted small">${g.wallet ? `${walletIcon(wallets.get(g.wallet))} Follows ${esc(g.wallet)}` : '✍️ Updated by you'}</span>
+            ${g.wallet || g.reached ? '' : `<button class="pill-btn" data-action="add-money" data-name="${esc(g.name)}">+ Add money</button>`}
+          </div>
+        </li>`).join('')}
+    </ul>
+    <button class="btn-secondary" data-action="add-goal">+ New goal</button>
+    <p class="hint small">Goals are saved in the Goals tab of your sheet. Telegram: /goals</p>`;
 }
 
 function renderReports() {
@@ -432,13 +606,13 @@ function renderReports() {
 
   const biggest = insights.biggest;
   const tiles = insights.count ? `
-    <section class="tiles">
-      <div class="card tile"><span class="tile-label">Average per day</span><strong>${esc(money(insights.avgPerDay))}</strong></div>
-      <div class="card tile"><span class="tile-label">Busiest day</span><strong>${insights.busiestDay ? esc(insights.busiestDay.name) : '—'}</strong>
+    <section class="tiles gap-lg">
+      <div class="card tile"><span class="overline">Average per day</span><strong class="serif tile-big">${nb(insights.avgPerDay)}</strong></div>
+      <div class="card tile"><span class="overline">Busiest day</span><strong class="serif tile-big">${insights.busiestDay ? esc(insights.busiestDay.name) : '—'}</strong>
         ${insights.busiestDay ? `<span class="tile-sub">${esc(money(insights.busiestDay.total))} spent</span>` : ''}</div>
-      <div class="card tile"><span class="tile-label">Biggest expense</span><strong>${biggest ? esc(money(biggest.amount)) : '—'}</strong>
+      <div class="card tile"><span class="overline">Biggest expense</span><strong class="serif tile-big">${biggest ? nb(biggest.amount) : '—'}</strong>
         ${biggest ? `<span class="tile-sub">${categoryIcon(biggest.category)} ${esc(biggest.note || biggest.subcategory || biggest.category)}</span>` : ''}</div>
-      <div class="card tile"><span class="tile-label">Transactions</span><strong>${insights.count}</strong>
+      <div class="card tile"><span class="overline">Transactions</span><strong class="serif tile-big">${insights.count}</strong>
         ${totals.income > 0 ? `<span class="tile-sub">Saved ${Math.round(Math.max(0, totals.net) / totals.income * 100)}% of income</span>` : ''}</div>
     </section>` : '';
 
@@ -446,25 +620,28 @@ function renderReports() {
   const hasFlow = flow.some((m) => m.income || m.expense);
   return `
     ${monthNav()}
-    <section class="stats">
-      <div class="card stat"><span>Income</span><strong class="pos">${esc(money(totals.income))}</strong></div>
-      <div class="card stat"><span>Expenses</span><strong class="neg">${esc(money(totals.expense))}</strong>${delta}</div>
-      <div class="card stat net"><span>Net</span><strong class="${totals.net < 0 ? 'neg' : 'pos'}">${esc(money(totals.net))}</strong></div>
+    <section class="hero-block report-hero">
+      <p class="overline">Net this month</p>
+      <p class="display ${totals.net < 0 ? 'neg' : ''}">${bigMoney(totals.net)}</p>
+      <div class="hero-split">
+        <div><span class="overline">Income</span><strong class="pos">${nb(totals.income)}</strong></div>
+        <div class="stat"><span class="overline">Expenses</span><strong>${nb(totals.expense)}</strong>${delta}</div>
+      </div>
     </section>
     ${monthTxs.length ? '' : '<p class="empty">No transactions in this month.</p>'}
     ${parts.length ? `
-      <section>
-        <h2 class="section-title"><span>Where it went</span></h2>
+      <section class="gap-lg">
+        ${sectionTitle('Where it went')}
         <div class="card chart-card">${segmentedBar(parts, money)}</div>
         <ul class="card list cats">${categoryList(EXPENSE)}</ul>
       </section>` : ''}
     ${tiles}
     ${hasFlow ? `
-      <section>
-        <h2 class="section-title"><span>Cash flow</span><span class="muted">tap a month</span></h2>
+      <section class="gap-xl">
+        ${sectionTitle('Cash flow', '<span class="muted small">tap a month</span>')}
         <div class="card chart-card">${cashFlowChart(flow, state.month, money)}</div>
       </section>` : ''}
-    ${incomeList ? `<section><h2 class="section-title"><span>Income by category</span></h2><ul class="card list cats">${incomeList}</ul></section>` : ''}`;
+    ${incomeList ? `<section class="gap-lg">${sectionTitle('Income by category')}<ul class="card list cats">${incomeList}</ul></section>` : ''}`;
 }
 
 /** Shows a month's numbers under the cash-flow chart (on hover/focus); back to the selected month after. */
@@ -477,28 +654,105 @@ function showCashFlowReadout(hit) {
   box.innerHTML = readout({ year: +d.year, month: +d.month, income: +d.income, expense: +d.expense, net: +d.net }, money);
 }
 
-function filteredTransactions() {
-  const { txs } = computed();
-  const query = state.search.trim().toLowerCase();
-  return txs.filter((tx) => {
-    if (state.filter !== 'all' && tx.type !== state.filter) return false;
-    if (!query) return true;
-    return [tx.category, tx.subcategory, tx.note, tx.wallet, tx.toWallet, tx.type, String(tx.amount), `#${tx.id}`]
-      .some((field) => String(field || '').toLowerCase().includes(query));
-  });
+// ---------- transactions: search + filters ----------
+
+const filtered = (filters = state.filters) => filterTransactions(computed().txs, state.search, filters, new Date());
+const isFiltering = () => state.search.trim() !== '' || state.filters.type !== 'all' || activeFilterCount(state.filters) > 0;
+
+/** Removable pills for the filters that are on. */
+function activePills() {
+  const f = state.filters;
+  const pills = [];
+  if (f.range !== 'all' && rangeBounds(f.range, new Date(), f.from, f.to)) {
+    let label = RANGES.find(([v]) => v === f.range)?.[1];
+    if (f.range === 'custom') {
+      const fmt = (d) => (d ? new Date(`${d}T12:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '…');
+      label = `${fmt(f.from)} – ${fmt(f.to)}`;
+    }
+    pills.push(['range', '', `📅 ${label}`]);
+  }
+  f.wallets.forEach((w) => pills.push(['wallet', w, w]));
+  f.categories.forEach((c) => pills.push(['category', c, `${categoryIcon(c)} ${c}`]));
+  if (Number(f.min) > 0 || Number(f.max) > 0) {
+    const label = f.min && f.max ? `${money(f.min)} – ${money(f.max)}` : f.min ? `≥ ${money(f.min)}` : `≤ ${money(f.max)}`;
+    pills.push(['amount', '', label]);
+  }
+  if (!pills.length) return '';
+  return `<div class="pills">${pills.map(([kind, value, label]) => `
+    <button class="pill" data-action="remove-filter" data-kind="${kind}" data-v="${esc(value)}" aria-label="Remove filter ${esc(label)}">${esc(label)}${ICONS.close}</button>`).join('')}
+    <button class="link small" data-action="clear-filters">Clear all</button></div>`;
+}
+
+function resultsHtml() {
+  const txs = filtered();
+  const query = state.search.trim();
+  let summary = '';
+  if (isFiltering()) {
+    const s = summarize(txs);
+    summary = `
+      <div class="card result-summary">
+        <div><span class="overline">${s.count === 1 ? 'Result' : 'Results'}</span><strong class="serif">${s.count}</strong></div>
+        <div><span class="overline">Out</span><strong>${nb(s.out)}</strong></div>
+        <div><span class="overline">In</span><strong class="pos">${nb(s.in)}</strong></div>
+        <button class="icon-btn" data-action="export" aria-label="Export these transactions as CSV" ${s.count ? '' : 'disabled'}>${ICONS.share}</button>
+      </div>`;
+  }
+  return summary + txListByDay(txs, { query });
 }
 
 function renderTransactions() {
+  const f = state.filters;
   const chips = [['all', 'All'], [EXPENSE, 'Expenses'], [INCOME, 'Income'], [TRANSFER, 'Transfers']]
-    .map(([value, label]) => `<button class="chip ${state.filter === value ? 'active' : ''}" data-action="filter" data-filter="${value}">${label}</button>`)
+    .map(([value, label]) => `<button class="chip ${f.type === value ? 'active' : ''}" data-action="type" data-type="${value}" aria-pressed="${f.type === value}">${label}</button>`)
     .join('');
+  const count = activeFilterCount(f);
   return `
-    <div class="search">
-      <input id="search" type="search" placeholder="Search notes, categories, wallets…" value="${esc(state.search)}" autocomplete="off">
+    <div class="searchbar">
+      <label class="search-field">
+        ${ICONS.search}
+        <input id="search" type="search" placeholder="Search notes, categories, amounts…" value="${esc(state.search)}" autocomplete="off" enterkeyhint="search">
+        <button type="button" class="clear-search ${state.search ? '' : 'hidden'}" data-action="clear-search" aria-label="Clear search">${ICONS.close}</button>
+      </label>
+      <button class="filter-btn ${count ? 'on' : ''}" data-action="open-filters" aria-label="Filters${count ? ` (${count} on)` : ''}">${ICONS.filter}${count ? `<span class="badge">${count}</span>` : ''}</button>
     </div>
     <div class="chips">${chips}</div>
-    <p class="hint small">Tap a transaction to edit it · swipe left to delete</p>
-    <div id="tx-list">${txListByDay(filteredTransactions())}</div>`;
+    ${activePills()}
+    <div id="tx-results">${resultsHtml()}</div>
+    <p class="hint small">Tap a transaction to edit it · swipe left to delete</p>`;
+}
+
+function openFilters() {
+  openFilterSheet({
+    filters: state.filters,
+    wallets: state.data.wallets || [],
+    categories: state.data.categories || {},
+    count: (f) => filtered(f).length,
+    onApply: (f) => {
+      state.filters = f;
+      state.limit = 100;
+      render();
+    },
+  });
+}
+
+async function exportCsv() {
+  const txs = filtered();
+  const name = `transactions-${new Date().toISOString().slice(0, 10)}.csv`;
+  const file = new File([toCsv(txs)], name, { type: 'text/csv' });
+  // On iPhone the share sheet lets you save to Files, AirDrop or mail it
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      return;
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+    }
+  }
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(file);
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function renderWallet(name) {
@@ -510,17 +764,17 @@ function renderWallet(name) {
   const flow = walletFlow(name, inMonth(mine, now.getFullYear(), now.getMonth()));
   const balance = balances.get(name) || 0;
   return `
-    <section class="hero card">
-      <p class="hero-label">${walletIcon(type)} ${esc(type)}</p>
-      <p class="hero-value ${balance < 0 ? 'neg' : ''}">${esc(money(balance))}</p>
+    <section class="hero-block">
+      <p class="overline">${walletIcon(type)} ${esc(type)} · balance</p>
+      <p class="display ${balance < 0 ? 'neg' : ''}">${bigMoney(balance)}</p>
       <div class="hero-split">
-        <div><span class="dot pos"></span>In this month<strong class="pos">${esc(money(flow.moneyIn))}</strong></div>
-        <div><span class="dot neg"></span>Out this month<strong class="neg">${esc(money(flow.moneyOut))}</strong></div>
+        <div><span class="overline">In this month</span><strong class="pos">${nb(flow.moneyIn)}</strong></div>
+        <div><span class="overline">Out this month</span><strong>${nb(flow.moneyOut)}</strong></div>
       </div>
       ${wallet ? `<p class="muted small">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
     </section>
-    <section>
-      <h2 class="section-title"><span>Transactions</span><span class="muted">${mine.length}</span></h2>
+    <section class="gap-lg">
+      ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
       ${txListByDay(mine, { perspective: name })}
     </section>`;
 }
@@ -556,8 +810,8 @@ function settingsForm({ firstRun }) {
 function renderSettings() {
   return `
     ${settingsForm({ firstRun: false })}
-    <section>
-      <h2 class="section-title"><span>About</span></h2>
+    <section class="gap-xl">
+      ${sectionTitle('About')}
       <ul class="card list padded">
         <li class="kv"><span>Spreadsheet</span><span>${esc(state.data?.sheet || '—')}</span></li>
         <li class="kv"><span>Last updated</span><span>${state.fetchedAt ? esc(new Date(state.fetchedAt).toLocaleString('en-GB')) : '—'}</span></li>
@@ -571,8 +825,8 @@ function renderSettings() {
 function renderSetup() {
   return `
     <main class="setup">
-      <div class="setup-logo"><img src="icons/icon-192.png" alt="" width="72" height="72"></div>
-      <h1>Expense Tracker</h1>
+      <p class="overline">Personal finance · on your Google Sheet</p>
+      <h1>Expense<br><em>Tracker</em></h1>
       <p class="muted">Connect to your Google Sheet using the Apps Script URL and API key. They're saved on this device only.</p>
       ${settingsForm({ firstRun: true })}
       <a class="btn-secondary" href="?demo">Preview with sample data</a>
@@ -583,9 +837,15 @@ function renderSetup() {
 
 const app = document.getElementById('app');
 
+function greeting(now = new Date()) {
+  const h = now.getHours();
+  return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+
 function titleText() {
   if (state.view === 'settings') return 'Settings';
   if (state.view?.wallet) return state.view.wallet;
+  if (state.tab === 'home') return greeting();
   return TAB_TITLES[state.tab];
 }
 
@@ -598,12 +858,13 @@ function statusText() {
 
 function headerHtml() {
   const inner = state.view !== null;
+  const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   return `
     <div class="topbar-row">
       ${inner ? `<button class="icon-btn back" data-action="back" aria-label="Back">${ICONS.back}</button>` : ''}
       <div class="titles">
+        <p class="overline status">${!inner && state.tab === 'home' ? `${esc(date)} · ` : ''}${esc(statusText())}</p>
         <h1>${esc(titleText())}</h1>
-        <p class="status">${esc(statusText())}</p>
       </div>
       ${!isDemo ? `<button class="icon-btn ${state.loading ? 'spin' : ''}" data-action="refresh" aria-label="Refresh" ${state.loading ? 'disabled' : ''}>${ICONS.refresh}</button>` : ''}
       ${!inner && !isDemo ? `<button class="icon-btn" data-action="settings" aria-label="Settings">${ICONS.settings}</button>` : ''}
@@ -626,7 +887,7 @@ function mainHtml() {
   }
   if (state.view?.wallet) return renderWallet(state.view.wallet);
   if (state.tab === 'transactions') return renderTransactions();
-  if (state.tab === 'budgets') return renderBudgets();
+  if (state.tab === 'budgets') return renderPlan();
   if (state.tab === 'reports') return renderReports();
   return renderHome();
 }
@@ -636,25 +897,54 @@ function tabButton(tab) {
   return `<button class="tab ${active ? 'active' : ''}" data-action="tab" data-tab="${tab}" ${active ? 'aria-current="page"' : ''}>${ICONS[tab]}<span>${TAB_TITLES[tab]}</span></button>`;
 }
 
+/** Big numbers count up from zero when a screen opens (skipped with Reduce Motion). */
+function countUp(root) {
+  if (reducedMotion()) return;
+  root.querySelectorAll('[data-count]').forEach((el) => {
+    const target = Number(el.dataset.count);
+    if (!(target > 0)) return;
+    const start = performance.now();
+    const duration = 900;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - (1 - t) ** 4; // ease-out quart: fast start, gentle landing
+      el.textContent = formatMoney(target * eased, { decimals: decimals() });
+      if (t < 1 && el.isConnected) requestAnimationFrame(step);
+    };
+    el.textContent = formatMoney(0, { decimals: decimals() });
+    requestAnimationFrame(step);
+  });
+}
+
 function render() {
   if (!isDemo && !(settings.url && settings.key)) {
     app.innerHTML = renderSetup();
     return;
   }
+  const animate = state.animate && !reducedMotion();
+  state.animate = false;
   app.innerHTML = `
     <header class="topbar">${headerHtml()}</header>
-    <main class="content">${mainHtml()}</main>
+    <main class="content ${animate ? 'enter' : ''}">${mainHtml()}</main>
     <nav class="tabbar">
       ${tabButton('home')}${tabButton('transactions')}
       <button class="tab-add" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
       ${tabButton('budgets')}${tabButton('reports')}
     </nav>`;
+  // Numbers count up the first time each screen opens after launching the app; after that they just appear
+  const screen = JSON.stringify([state.tab, state.plan, state.view]);
+  if (animate && !countedScreens.has(screen)) {
+    countedScreens.add(screen);
+    countUp(app.querySelector('.content'));
+  }
 }
+const countedScreens = new Set();
 
 // ---------- navigation (uses browser history so the back gesture works) ----------
 
 function openView(view) {
   state.view = view;
+  state.animate = true;
   history.pushState({ view }, '');
   render();
   window.scrollTo(0, 0);
@@ -662,8 +952,19 @@ function openView(view) {
 
 window.addEventListener('popstate', (event) => {
   state.view = event.state?.view ?? null;
+  state.animate = true;
   render();
 });
+
+function goTab(tab) {
+  if (state.view !== null) history.back();
+  state.view = null;
+  state.tab = tab;
+  state.limit = 100;
+  state.animate = true;
+  render();
+  window.scrollTo(0, 0);
+}
 
 // ---------- swipe left on a transaction to reveal Delete ----------
 
@@ -722,6 +1023,13 @@ app.addEventListener('pointercancel', endSwipe);
 
 // ---------- events ----------
 
+/** Redraws only the results (not the search box), so the keyboard stays open while typing. */
+function refreshResults() {
+  const box = document.getElementById('tx-results');
+  if (box) box.innerHTML = resultsHtml();
+  app.querySelector('.clear-search')?.classList.toggle('hidden', !state.search);
+}
+
 app.addEventListener('click', async (event) => {
   if (suppressClick) { event.preventDefault(); return; }
   const target = event.target.closest('[data-action]');
@@ -747,16 +1055,24 @@ app.addEventListener('click', async (event) => {
     openEntry();
   } else if (action === 'edit-budgets') {
     openBudgets();
+  } else if (action === 'add-goal') {
+    openGoal();
+  } else if (action === 'edit-goal') {
+    openGoal(target.dataset.name);
+  } else if (action === 'add-money') {
+    const goal = findGoal(target.dataset.name);
+    if (goal) openAddMoneySheet({ goal, money, onSave: saveGoal });
+  } else if (action === 'plan') {
+    state.plan = target.dataset.plan;
+    if (state.tab !== 'budgets' || state.view !== null) goTab('budgets');
+    else { state.animate = true; render(); }
+  } else if (action === 'scroll') {
+    document.getElementById(target.dataset.target)?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
   } else if (action === 'cf-month') {
     state.month = { year: Number(target.dataset.year), month: Number(target.dataset.month) };
     render();
   } else if (action === 'tab') {
-    if (state.view !== null) history.back();
-    state.view = null;
-    state.tab = target.dataset.tab;
-    state.limit = 100;
-    render();
-    window.scrollTo(0, 0);
+    goTab(target.dataset.tab);
   } else if (action === 'wallet') {
     openView({ wallet: target.dataset.name });
   } else if (action === 'settings') {
@@ -773,10 +1089,31 @@ app.addEventListener('click', async (event) => {
     const key = target.dataset.key;
     state.expanded.has(key) ? state.expanded.delete(key) : state.expanded.add(key);
     render();
-  } else if (action === 'filter') {
-    state.filter = target.dataset.filter;
+  } else if (action === 'type') {
+    state.filters = { ...state.filters, type: target.dataset.type };
     state.limit = 100;
     render();
+  } else if (action === 'open-filters') {
+    openFilters();
+  } else if (action === 'remove-filter') {
+    const f = { ...state.filters, wallets: [...state.filters.wallets], categories: [...state.filters.categories] };
+    const { kind, v } = target.dataset;
+    if (kind === 'range') Object.assign(f, { range: 'all', from: '', to: '' });
+    if (kind === 'wallet') f.wallets = f.wallets.filter((w) => w !== v);
+    if (kind === 'category') f.categories = f.categories.filter((c) => c !== v);
+    if (kind === 'amount') Object.assign(f, { min: '', max: '' });
+    state.filters = f;
+    render();
+  } else if (action === 'clear-filters') {
+    state.filters = { ...freshFilters(), type: state.filters.type };
+    render();
+  } else if (action === 'clear-search') {
+    state.search = '';
+    const input = document.getElementById('search');
+    if (input) { input.value = ''; input.focus(); }
+    refreshResults();
+  } else if (action === 'export') {
+    exportCsv().catch((error) => toast(`Couldn't export: ${error.message}`));
   } else if (action === 'more') {
     state.limit += 100;
     render();
@@ -818,12 +1155,11 @@ app.addEventListener('pointerout', (event) => {
   if (event.target.closest?.('.cf-hit') && !event.relatedTarget?.closest?.('.cf-hit')) showCashFlowReadout(null);
 });
 
-// Typing in the search box only redraws the list, so the keyboard stays open
 app.addEventListener('input', (event) => {
   if (event.target.id !== 'search') return;
   state.search = event.target.value;
   state.limit = 100;
-  document.getElementById('tx-list').innerHTML = txListByDay(filteredTransactions());
+  refreshResults();
 });
 
 app.addEventListener('submit', async (event) => {
@@ -859,6 +1195,7 @@ app.addEventListener('submit', async (event) => {
     status.textContent = `Connected to “${result.sheet}”.`;
     if (state.view === 'settings') history.back();
     state.view = null;
+    state.animate = true;
     render();
     refresh();
   } catch (error) {
@@ -881,11 +1218,12 @@ setInterval(() => { if (!state.loading) renderHeader(); }, 30000);
 
 // ---------- start ----------
 
-// Optional starting point from the address, e.g. …/#reports or …/#add
+// Optional starting point from the address, e.g. …/#reports, …/#goals or …/#add
 const startHash = location.hash.slice(1);
-const legacyTabs = { overview: 'home', summary: 'reports' };
+const legacyTabs = { overview: 'home', summary: 'reports', goals: 'budgets', plan: 'budgets' };
 const startTab = legacyTabs[startHash] || startHash;
 if (TABS.includes(startTab)) state.tab = startTab;
+if (startHash === 'goals') state.plan = 'goals';
 
 history.replaceState({ view: null }, '');
 render();

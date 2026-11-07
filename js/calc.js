@@ -309,3 +309,122 @@ export function timeAgo(timestamp, now = Date.now()) {
   const days = Math.floor(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
+
+// ---------- savings goals ----------
+
+/** Whole months from `now` until a "YYYY-MM-DD" date (at least 1 while the date is ahead; 0 once passed). */
+export function monthsUntil(isoDate, now = new Date()) {
+  const target = parseDate(isoDate);
+  if (!target) return null;
+  const end = new Date(target.getFullYear(), target.getMonth(), target.getDate(), 23, 59);
+  if (end < now) return 0;
+  const months = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
+  return Math.max(1, months - (target.getDate() < now.getDate() ? 1 : 0));
+}
+
+/**
+ * Progress of one goal. A goal linked to a wallet uses that wallet's balance (Monarch-style);
+ * otherwise the "saved" amount you keep up to date yourself.
+ */
+export function goalProgress(goal, balances, now = new Date()) {
+  const current = goal.wallet ? Math.max(0, balances.get(goal.wallet) || 0) : goal.saved || 0;
+  const remaining = Math.max(0, goal.target - current);
+  const reached = remaining === 0;
+  const monthsLeft = goal.targetDate ? monthsUntil(goal.targetDate, now) : null;
+  return {
+    ...goal,
+    current,
+    remaining,
+    reached,
+    fraction: goal.target > 0 ? Math.min(1, current / goal.target) : 0,
+    monthsLeft,
+    overdue: !reached && monthsLeft === 0,
+    perMonth: !reached && monthsLeft > 0 ? remaining / monthsLeft : null,
+  };
+}
+
+// ---------- search & filters ----------
+
+export const RANGES = [
+  ['all', 'All time'], ['month', 'This month'], ['last-month', 'Last month'],
+  ['3-months', 'Last 3 months'], ['year', 'This year'], ['custom', 'Custom'],
+];
+
+/** {start, end} (end exclusive) for a date-range preset, or null for "all time". */
+export function rangeBounds(range, now = new Date(), from = '', to = '') {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (range) {
+    case 'month': return { start: new Date(y, m, 1), end: new Date(y, m + 1, 1) };
+    case 'last-month': return { start: new Date(y, m - 1, 1), end: new Date(y, m, 1) };
+    case '3-months': return { start: new Date(y, m - 2, 1), end: new Date(y, m + 1, 1) };
+    case 'year': return { start: new Date(y, 0, 1), end: new Date(y + 1, 0, 1) };
+    case 'custom': {
+      const start = parseDate(from);
+      const endDay = parseDate(to);
+      if (!start && !endDay) return null;
+      return {
+        start: start || new Date(1970, 0, 1),
+        end: endDay ? new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() + 1) : new Date(9999, 0, 1),
+      };
+    }
+    default: return null;
+  }
+}
+
+export const EMPTY_FILTERS = Object.freeze({ type: 'all', range: 'all', from: '', to: '', wallets: [], categories: [], min: '', max: '' });
+
+/** Number of filters (besides the type chips and the search text) that are switched on. */
+export function activeFilterCount(f) {
+  return (f.range !== 'all' && rangeBounds(f.range, new Date(), f.from, f.to) ? 1 : 0)
+    + (f.wallets.length ? 1 : 0) + (f.categories.length ? 1 : 0)
+    + (Number(f.min) > 0 || Number(f.max) > 0 ? 1 : 0);
+}
+
+/**
+ * Transactions matching the search text and filters.
+ * The text matches notes, categories, subcategories, wallets, "#id", and amounts ("25000", "25k", "1.5m").
+ */
+export function filterTransactions(txs, query, f, now = new Date()) {
+  const q = String(query || '').trim().toLowerCase();
+  const qAmount = /^\d+(?:[.,]\d+)?\s*[km]?$/.test(q)
+    ? parseFloat(q.replace(',', '.')) * (q.endsWith('k') ? 1e3 : q.endsWith('m') ? 1e6 : 1)
+    : null;
+  const bounds = rangeBounds(f.range, now, f.from, f.to);
+  const min = Number(f.min) || 0;
+  const max = Number(f.max) || 0;
+  return txs.filter((tx) => {
+    if (f.type !== 'all' && tx.type !== f.type) return false;
+    if (bounds && (tx.when < bounds.start || tx.when >= bounds.end)) return false;
+    if (f.wallets.length && !f.wallets.includes(tx.wallet) && !f.wallets.includes(tx.toWallet)) return false;
+    if (f.categories.length && !f.categories.includes(tx.category)) return false;
+    if (min && tx.amount < min) return false;
+    if (max && tx.amount > max) return false;
+    if (!q) return true;
+    if (qAmount !== null && tx.amount === qAmount) return true;
+    return [tx.category, tx.subcategory, tx.note, tx.wallet, tx.toWallet, `#${tx.id}`, String(tx.amount)]
+      .some((field) => String(field || '').toLowerCase().includes(q));
+  });
+}
+
+/** Count and money out / in for a list of transactions (transfers move money, so they count in neither). */
+export function summarize(txs) {
+  let out = 0;
+  let income = 0;
+  for (const tx of txs) {
+    if (tx.type === EXPENSE) out += tx.amount;
+    else if (tx.type === INCOME) income += tx.amount;
+  }
+  return { count: txs.length, out, in: income };
+}
+
+/** Transactions as CSV (same columns as the sheet), oldest first. */
+export function toCsv(txs) {
+  const cell = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = ['ID', 'Date', 'Type', 'Amount', 'Wallet', 'To Wallet', 'Category', 'Subcategory', 'Note'];
+  const lines = [...txs].reverse().map((t) => [t.id, t.date, t.type, t.amount, t.wallet, t.toWallet, t.category, t.subcategory, t.note].map(cell).join(','));
+  return [header.join(','), ...lines].join('\n') + '\n';
+}
