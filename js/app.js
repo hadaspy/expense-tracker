@@ -305,19 +305,35 @@ function openNewWallet() {
 }
 
 async function removeWallet(name) {
-  const used = (state.data.transactions || []).filter((t) => t.wallet === name || t.toWallet === name).length;
-  const linked = (state.data.goals || []).find((g) => g.wallet === name);
-  const scheduled = recurringItems().some((r) => r.wallet === name || r.toWallet === name);
-  if (used) { alert(`“${name}” still has ${used} transaction${used === 1 ? '' : 's'}. Delete them, or edit them to use another wallet, before removing it.`); return; }
-  if (scheduled) { alert(`A recurring item still uses “${name}”. Change or delete it first.`); return; }
-  if (linked) { alert(`The goal “${linked.name}” follows “${name}”. Change the goal first.`); return; }
-  if (!confirm(`Remove the wallet “${name}”? It has no transactions, so no history is lost.`)) return;
+  const txs = (state.data.transactions || []).filter((t) => t.wallet === name || t.toWallet === name);
+  const scheduled = recurringItems().filter((r) => r.wallet === name || r.toWallet === name);
+  const goals = (state.data.goals || []).filter((g) => g.wallet === name);
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const parts = [];
+  if (txs.length) parts.push(plural(txs.length, 'transaction'));
+  if (scheduled.length) parts.push(plural(scheduled.length, 'recurring item'));
+  const warning = parts.length
+    ? `Remove “${name}”?\n\nThis also deletes its ${parts.join(' and ')}. A transfer to or from another wallet disappears from that wallet too, so its balance changes. ${goals.length ? `Goals that follow it keep today's balance as their saved amount. ` : ''}This can't be undone.`
+    : `Remove the wallet “${name}”?${goals.length ? ' Goals that follow it keep its balance as their saved amount.' : ''}`;
+  if (!confirm(warning)) return;
   try {
-    const wallets = isDemo ? state.data.wallets.filter((w) => w.name !== name) : (await apiPost({ action: 'deleteWallet', name })).wallets;
+    let patch;
+    if (isDemo) {
+      const balance = computed().balances.get(name) || 0;
+      patch = {
+        wallets: state.data.wallets.filter((w) => w.name !== name),
+        transactions: (state.data.transactions || []).filter((t) => t.wallet !== name && t.toWallet !== name),
+        recurring: recurringItems().filter((r) => r.wallet !== name && r.toWallet !== name),
+        goals: (state.data.goals || []).map((g) => (g.wallet === name ? { ...g, wallet: '', saved: Math.max(0, balance) } : g)),
+      };
+    } else {
+      patch = { wallets: (await apiPost({ action: 'deleteWallet', name, force: true })).wallets };
+    }
     state.view = null;
     history.back();
-    setData({ wallets });
+    setData(patch);
     toast(`${name} removed`);
+    if (!isDemo) refresh(); // pick up the deleted transactions, recurring items and goal changes
   } catch (error) {
     alert(error.message);
   }
@@ -491,7 +507,7 @@ function walletCards() {
     const style = parseCard(w.card, w.type);
     specs.push({
       title: w.name,
-      kicker: `${walletIcon(w.type)} ${w.type || 'Other'}`,
+      kicker: w.type || 'Other',
       caption: balance < 0 ? 'Owed' : 'Balance',
       amountHtml: bigMoney(balance),
       footHtml: esc(style.label),
@@ -1229,7 +1245,7 @@ function renderWallet(name) {
     <section class="wallet-head">
       ${cardHtml({
         title: name,
-        kicker: `${walletIcon(type)} ${type}`,
+        kicker: type,
         caption: balance < 0 ? 'Owed' : 'Balance',
         amountHtml: bigMoney(balance),
         footHtml: esc(style.label),
@@ -1243,8 +1259,8 @@ function renderWallet(name) {
         <button class="action-btn" data-action="customize-card" data-name="${esc(name)}">${ICONS.palette}<span>Customize card</span></button>
       </div>` : ''}
       <div class="card wallet-flow">
-        ${flowStat('+', 'In this month', nb(flow.moneyIn))}
-        ${flowStat('−', 'Out this month', nb(flow.moneyOut))}
+        ${flowStat('+', 'Income', nb(flow.moneyIn))}
+        ${flowStat('−', 'Expense', nb(flow.moneyOut))}
       </div>
       ${wallet ? `<p class="muted small wallet-opening">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
     </section>
@@ -1345,22 +1361,26 @@ function titleText() {
 function statusText() {
   if (isDemo) return 'Sample data';
   if (state.loading) return 'Updating…';
+  if (state.error) return 'Not updated';
   if (state.fetchedAt) return `Updated ${timeAgo(state.fetchedAt)}`;
-  return '';
+  return 'Not updated yet';
+}
+
+/** A check mark next to the title: blue when your data is up to date, grey when it isn't (updating, offline, error). */
+function syncMark() {
+  const ok = isDemo || (!!state.fetchedAt && !state.error && !state.loading);
+  const label = statusText();
+  return `<span class="sync ${ok ? 'ok' : ''} ${state.loading ? 'busy' : ''}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${ICONS.check}</span>`;
 }
 
 function headerHtml() {
   const inner = state.view !== null;
-  const date = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   return `
     <div class="topbar-row">
       ${inner ? `<button class="icon-btn back" data-action="back" aria-label="Back">${ICONS.back}</button>` : ''}
       <div class="titles">
-        <p class="overline status">${!inner && state.tab === 'home' ? `${esc(date)} · ` : ''}${esc(statusText())}</p>
-        <h1>${esc(titleText())}</h1>
+        <h1>${esc(titleText())}${syncMark()}</h1>
       </div>
-      <button class="icon-btn" data-action="toggle-theme" aria-label="${isDark() ? 'Switch to light mode' : 'Switch to dark mode'}">${isDark() ? ICONS.sun : ICONS.moon}</button>
-      ${!isDemo ? `<button class="icon-btn ${state.loading ? 'spin' : ''}" data-action="refresh" aria-label="Refresh" ${state.loading ? 'disabled' : ''}>${ICONS.refresh}</button>` : ''}
     </div>
     ${isDemo ? '<p class="banner">Sample data — changes aren\'t saved. <a href="./">Exit preview</a></p>' : ''}
     ${state.error ? `<p class="banner error">Couldn't update: ${esc(state.error)}${state.data ? ' Showing saved data.' : ''}</p>` : ''}`;
@@ -1369,6 +1389,7 @@ function headerHtml() {
 function renderHeader() {
   const header = document.querySelector('.topbar');
   if (header) header.innerHTML = headerHtml();
+  document.querySelector('.ptr')?.classList.toggle('loading', state.loading);
 }
 
 function mainHtml() {
@@ -1729,6 +1750,69 @@ app.addEventListener('submit', async (event) => {
   }
 });
 
+// ---------- pull down to refresh, and swipe in from a screen edge for back / forward ----------
+
+const ptr = document.createElement('div');
+ptr.className = 'ptr';
+ptr.setAttribute('aria-hidden', 'true');
+ptr.innerHTML = ICONS.refresh;
+document.body.appendChild(ptr);
+const PULL_AT = 56;
+let pull = null;
+let edge = null;
+const noGesture = () => document.body.classList.contains('sheet-open');
+
+function showPull(distance) {
+  ptr.style.opacity = distance > 4 ? String(Math.min(1, distance / PULL_AT)) : '0';
+  ptr.style.transform = `translate(-50%, ${distance - 44}px) rotate(${distance * 4}deg)`;
+  ptr.classList.toggle('ready', distance >= PULL_AT);
+}
+function endPull() {
+  ptr.style.transition = '';
+  ptr.style.opacity = '';
+  ptr.style.transform = '';
+  ptr.classList.remove('ready');
+  pull = null;
+}
+
+window.addEventListener('touchstart', (event) => {
+  const t = event.touches[0];
+  pull = event.touches.length === 1 && window.scrollY <= 0 && !noGesture() && state.data ? { x: t.clientX, y: t.clientY, d: 0 } : null;
+  const fromEdge = event.touches.length === 1 && !noGesture() && (t.clientX <= 22 || t.clientX >= window.innerWidth - 22);
+  edge = fromEdge ? { x: t.clientX, y: t.clientY, left: t.clientX <= 22 } : null;
+  if (edge) pull = null;
+}, { passive: true });
+
+window.addEventListener('touchmove', (event) => {
+  if (!pull) return;
+  const t = event.touches[0];
+  const dx = t.clientX - pull.x;
+  const dy = t.clientY - pull.y;
+  if (window.scrollY > 0 || dy <= 0 || Math.abs(dx) > dy) { if (pull.d) endPull(); else pull = null; return; }
+  pull.d = Math.min(96, dy * 0.5);
+  ptr.style.transition = 'none';
+  showPull(pull.d);
+}, { passive: true });
+
+window.addEventListener('touchend', (event) => {
+  if (pull) {
+    const go = pull.d >= PULL_AT;
+    endPull();
+    if (go) { if (isDemo) toast('Sample data is always up to date'); else refresh(); }
+  }
+  if (edge) {
+    const t = event.changedTouches[0];
+    const dx = t.clientX - edge.x;
+    const dy = t.clientY - edge.y;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > 2 * Math.abs(dy)) {
+      if (edge.left && dx > 0 && state.view !== null) history.back();     // from the left edge: back
+      else if (!edge.left && dx < 0) history.forward();                    // from the right edge: forward (if there is one)
+    }
+    edge = null;
+  }
+}, { passive: true });
+window.addEventListener('touchcancel', () => { endPull(); edge = null; }, { passive: true });
+
 // Refresh when coming back to the app after a while
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && (!state.fetchedAt || Date.now() - state.fetchedAt > REFRESH_AFTER_MS)) {
@@ -1759,3 +1843,28 @@ if (startHash === 'add') openEntry();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('./sw.js').catch(() => { /* offline support is optional */ });
 }
+
+// ---------- emoji follow the theme: every emoji is wrapped so the stylesheet can tint it blue ----------
+
+const EMOJI = /(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}|\p{Emoji_Modifier})*)/gu;
+function tintEmoji(root) {
+  if (!root || !root.nodeType) return;
+  const walker = document.createTreeWalker(root.nodeType === 3 ? root.parentNode : root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (root.nodeType === 3 && n !== root) continue;
+    if (n.parentElement && !n.parentElement.closest('.emo, script, style, textarea, input, option, title') && /\p{Extended_Pictographic}/u.test(n.nodeValue)) nodes.push(n);
+  }
+  for (const node of nodes) {
+    const frag = document.createDocumentFragment();
+    node.nodeValue.split(EMOJI).forEach((part, i) => {
+      if (i % 2) { const span = document.createElement('span'); span.className = 'emo'; span.textContent = part; frag.appendChild(span); }
+      else if (part) frag.appendChild(document.createTextNode(part));
+    });
+    node.replaceWith(frag);
+  }
+}
+tintEmoji(document.body);
+new MutationObserver((mutations) => {
+  for (const m of mutations) m.addedNodes.forEach((n) => { if (n.nodeType === 1 || n.nodeType === 3) tintEmoji(n); });
+}).observe(document.body, { childList: true, subtree: true });

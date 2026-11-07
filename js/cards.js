@@ -1,7 +1,6 @@
 // Wallet cards: each wallet shows as a payment-card-style tile on Home, and you can style it yourself
 // (colour, pattern, a label such as "•••• 0329"). The look is saved in the sheet's Wallets → Card column
 // as "colour|pattern|label", so it's the same on every device.
-import { walletIcon } from './calc.js';
 import { esc } from './ui.js';
 
 // Every colour keeps small white text at 4.5:1 or better (with the 16% shade the stylesheet adds).
@@ -15,7 +14,14 @@ export const CARD_COLOURS = [
   ['rose', 'Rose', 'linear-gradient(145deg, #c94f8c 0%, #c13f86 55%, #8f2a72 100%)'],
   ['graphite', 'Graphite', 'linear-gradient(145deg, #4a5263 0%, #2b313d 55%, #161a22 100%)'],
   ['gold', 'Gold', 'linear-gradient(145deg, #a87e2c 0%, #9c6f1f 55%, #6e4a10 100%)'],
+  // Light cards: dark text (the stylesheet switches on `is-light`)
+  ['white', 'White', 'linear-gradient(145deg, #ffffff 0%, #eef1f8 100%)', true],
+  ['platinum', 'Platinum', 'linear-gradient(145deg, #eceff4 0%, #d0d6e1 55%, #bcc4d3 100%)', true],
+  ['silver', 'Silver', 'linear-gradient(145deg, #d6dae1 0%, #b3b9c5 55%, #939ba9 100%)', true],
 ];
+
+export const CARD_SCHEMES = [['', 'None'], ['visa', 'Visa'], ['mastercard', 'Mastercard']];
+const isLight = (colour) => !!CARD_COLOURS.find(([id]) => id === colour)?.[3];
 
 export const CARD_PATTERNS = [
   ['none', 'Plain'],
@@ -31,28 +37,36 @@ const TYPE_COLOURS = {
   savings: 'gold', investment: 'violet', stock: 'violet',
 };
 
-/** "royal|waves|•••• 0329" → {colour, pattern, label}, with type-based defaults. */
+/** "royal|waves|•••• 0329|visa" → {colour, pattern, label, scheme}, with type-based defaults. */
 export function parseCard(card, type = '') {
-  const [colour = '', pattern = '', label = ''] = String(card || '').split('|');
+  const [colour = '', pattern = '', label = '', scheme = ''] = String(card || '').split('|');
   const known = CARD_COLOURS.some(([id]) => id === colour);
   return {
     colour: known ? colour : TYPE_COLOURS[String(type).toLowerCase()] || 'midnight',
     pattern: CARD_PATTERNS.some(([id]) => id === pattern) ? pattern : 'orbs',
     label: label.slice(0, 24),
+    scheme: CARD_SCHEMES.some(([id]) => id === scheme) ? scheme : '',
   };
 }
 
-export const formatCard = ({ colour, pattern, label }) => [colour, pattern, String(label || '').replace(/\|/g, '').trim()].join('|');
+export const formatCard = ({ colour, pattern, label, scheme }) => [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || ''].join('|');
 
 const background = (colour) => (CARD_COLOURS.find(([id]) => id === colour) || CARD_COLOURS[1])[2];
 
-const CHIP = '<svg class="card-chip" viewBox="0 0 34 26" aria-hidden="true"><rect x=".5" y=".5" width="33" height="25" rx="6"/><path d="M11 .5v25M23 .5v25M.5 9h10.5M23 9h10.5M.5 17h10.5M23 17h10.5"/></svg>';
+const CONTACTLESS = '<svg class="wcard-contactless" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8.5 8.5a5 5 0 0 1 0 7"/><path d="M12 5.8a8.6 8.6 0 0 1 0 12.4"/><path d="M15.5 3a12.4 12.4 0 0 1 0 18"/></svg>';
+
+// Card network logos; with no network chosen a generic card mark is shown
+const NETWORKS = {
+  mastercard: '<svg class="net-logo" viewBox="0 0 48 30" role="img" aria-label="Mastercard"><circle cx="17" cy="15" r="13" fill="#eb001b"/><circle cx="31" cy="15" r="13" fill="#f79e1b"/><path d="M24 4.6a13 13 0 0 1 0 20.8 13 13 0 0 1 0-20.8z" fill="#ff5f00"/></svg>',
+  visa: '<svg class="net-logo" viewBox="0 0 48 30" role="img" aria-label="Visa"><text x="24" y="22" text-anchor="middle" font-family="Poppins, Arial, sans-serif" font-style="italic" font-weight="800" font-size="19" letter-spacing="-1" fill="currentColor">VISA</text></svg>',
+  '': '<svg class="net-logo" viewBox="0 0 48 30" aria-hidden="true"><rect x="7" y="5" width="34" height="20" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 11.5h34" stroke="currentColor" stroke-width="3.5"/><path d="M12 19h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+};
 
 /**
  * One card.
  * @param {object} o
  * @param {string} o.title      wallet name (or "All accounts")
- * @param {string} o.kicker     small text top-right (wallet type)
+ * @param {string} o.kicker     small text top-left (wallet type)
  * @param {string} o.caption    small text above the amount
  * @param {string} o.amountHtml the formatted amount (already escaped)
  * @param {string} [o.footHtml] bottom-left text (label or details, already escaped)
@@ -62,10 +76,11 @@ const CHIP = '<svg class="card-chip" viewBox="0 0 34 26" aria-hidden="true"><rec
  */
 export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', style, attrs = '', tag = 'button', negative = false }) {
   return `
-    <${tag} class="wcard pattern-${style.pattern} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
-      <span class="wcard-top"><span class="wcard-title">${esc(title)}</span><span class="wcard-kicker">${esc(kicker)}</span></span>
+    <${tag} class="wcard pattern-${style.pattern} ${isLight(style.colour) ? 'is-light' : ''} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
+      <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-title">${esc(title)}</span></span>
+      ${CONTACTLESS}
       <span class="wcard-mid"><span class="wcard-caption">${esc(caption)}</span><span class="wcard-amount">${amountHtml}</span></span>
-      <span class="wcard-foot"><span class="wcard-label">${footHtml}</span>${CHIP}</span>
+      <span class="wcard-foot"><span class="wcard-label">${footHtml}</span>${NETWORKS[style.scheme || '']}</span>
     </${tag}>`;
 }
 
@@ -97,7 +112,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
 
   const preview = () => cardHtml({
     title: wallet.name,
-    kicker: `${walletIcon(wallet.type)} ${wallet.type}`,
+    kicker: wallet.type || 'Other',
     caption: 'Balance',
     amountHtml,
     footHtml: esc(style.label || '•••• ••••'),
@@ -118,12 +133,16 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
         <div class="card-preview">${preview()}</div>
         <p class="field-label">Colour</p>
         <div class="swatches" role="radiogroup" aria-label="Card colour">
-          ${CARD_COLOURS.map(([id, name, bg]) => `
-            <button type="button" class="swatch-btn ${style.colour === id ? 'active' : ''}" style="--card-bg:${bg}" data-act="colour" data-v="${id}" role="radio" aria-checked="${style.colour === id}" aria-label="${name}" title="${name}"></button>`).join('')}
+          ${CARD_COLOURS.map(([id, name, bg, light]) => `
+            <button type="button" class="swatch-btn ${light ? 'light' : ''} ${style.colour === id ? 'active' : ''}" style="--card-bg:${bg}" data-act="colour" data-v="${id}" role="radio" aria-checked="${style.colour === id}" aria-label="${name}" title="${name}"></button>`).join('')}
         </div>
         <p class="field-label">Pattern</p>
         <div class="chip-row wrap">
           ${CARD_PATTERNS.map(([id, name]) => `<button type="button" class="chip ${style.pattern === id ? 'active' : ''}" data-act="pattern" data-v="${id}" aria-pressed="${style.pattern === id}">${name}</button>`).join('')}
+        </div>
+        <p class="field-label">Card network <span class="muted">(optional)</span></p>
+        <div class="chip-row wrap">
+          ${CARD_SCHEMES.map(([id, name]) => `<button type="button" class="chip ${style.scheme === id ? 'active' : ''}" data-act="scheme" data-v="${id}" aria-pressed="${style.scheme === id}">${name}</button>`).join('')}
         </div>
         <label class="field">
           <span class="field-label">Label on the card <span class="muted">(optional)</span></span>
@@ -145,10 +164,11 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
     if (busy || !el) return;
     const { act, v } = el.dataset;
     if (act === 'cancel') { close(); return; }
-    if (act === 'colour' || act === 'pattern' || act === 'reset') {
+    if (act === 'colour' || act === 'pattern' || act === 'scheme' || act === 'reset') {
       if (act === 'colour') style.colour = v;
+      if (act === 'scheme') style.scheme = v;
       if (act === 'pattern') style.pattern = v;
-      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '' });
+      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '' });
       const scroll = sheet.querySelector('.sheet-body').scrollTop;
       render();
       sheet.querySelector('.sheet-body').scrollTop = scroll;
