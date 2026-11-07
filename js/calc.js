@@ -254,10 +254,10 @@ export function niceMax(value) {
   return 10 * power;
 }
 
-/** 1500000 → "1.5M", 250000 → "250K", 900 → "900". */
+/** 1500000 → "1,5M", 250000 → "250K", 900 → "900" (decimal comma, matching formatNumber). */
 export function compactNumber(value) {
   const abs = Math.abs(value);
-  const fmt = (n, suffix) => `${Number(n.toFixed(n < 10 ? 1 : 0))}${suffix}`;
+  const fmt = (n, suffix) => `${String(Number(n.toFixed(n < 10 ? 1 : 0))).replace('.', ',')}${suffix}`;
   if (abs >= 1e9) return fmt(value / 1e9, 'B');
   if (abs >= 1e6) return fmt(value / 1e6, 'M');
   if (abs >= 1e3) return fmt(value / 1e3, 'K');
@@ -275,12 +275,19 @@ export function netWorth(balances) {
   return { assets, debts, net: assets - debts };
 }
 
+/**
+ * Indonesian number style: dots between thousands, a comma for decimals.
+ * 3156000 → "3.156.000", 12.5 (2 decimals) → "12,50". Done by hand so every phone shows the same.
+ */
+export function formatNumber(value, decimals = 0) {
+  const [whole, fraction] = Math.abs(value).toFixed(decimals).split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return (value < 0 && Number(whole + (fraction || '')) !== 0 ? '-' : '') + grouped + (fraction ? `,${fraction}` : '');
+}
+
 export function formatMoney(value, { currency = '', decimals = 0 } = {}) {
-  const number = Math.abs(value).toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-  const sign = value < 0 ? '-' : '';
+  const number = formatNumber(Math.abs(value), decimals);
+  const sign = value < 0 && /[1-9]/.test(number) ? '-' : ''; // never "-0"
   return currency ? `${sign}${currency} ${number}` : `${sign}${number}`;
 }
 
@@ -387,9 +394,7 @@ export function activeFilterCount(f) {
  */
 export function filterTransactions(txs, query, f, now = new Date()) {
   const q = String(query || '').trim().toLowerCase();
-  const qAmount = /^\d+(?:[.,]\d+)?\s*[km]?$/.test(q)
-    ? parseFloat(q.replace(',', '.')) * (q.endsWith('k') ? 1e3 : q.endsWith('m') ? 1e6 : 1)
-    : null;
+  const qAmount = parseSearchAmount(q);
   const bounds = rangeBounds(f.range, now, f.from, f.to);
   const min = Number(f.min) || 0;
   const max = Number(f.max) || 0;
@@ -405,6 +410,19 @@ export function filterTransactions(txs, query, f, now = new Date()) {
     return [tx.category, tx.subcategory, tx.note, tx.wallet, tx.toWallet, `#${tx.id}`, String(tx.amount)]
       .some((field) => String(field || '').toLowerCase().includes(q));
   });
+}
+
+/**
+ * Reads an amount typed into search: "25000", "25.000", "1.500.000", "25k", "1,5m", "12,50".
+ * Dots or commas followed by exactly three digits are thousands separators; otherwise a decimal point.
+ */
+export function parseSearchAmount(q) {
+  const m = /^(\d[\d.,]*)\s*([km]?)$/.exec(q);
+  if (!m) return null;
+  const digits = m[1].replace(/[.,](?=\d{3}(?!\d))/g, '').replace(',', '.');
+  const n = parseFloat(digits);
+  if (!isFinite(n)) return null;
+  return n * (m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1);
 }
 
 /** Count and money out / in for a list of transactions (transfers move money, so they count in neither). */

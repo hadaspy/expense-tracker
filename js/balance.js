@@ -1,12 +1,13 @@
 // "Adjust balance" sheet: type what a wallet holds right now (same as /setbalance in Telegram).
 // The difference goes into the wallet's Opening Balance, so no transaction is added and reports don't change.
+import { formatNumber } from './calc.js';
 import { esc } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');
   return d ? Number(d) : null;
 };
-const grouped = (n) => (n === null ? '' : n.toLocaleString('en-US'));
+const grouped = (n) => (n === null ? '' : formatNumber(n));
 
 /**
  * @param {object} o

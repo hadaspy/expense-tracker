@@ -1,13 +1,13 @@
 // "Filters" sheet for the Transactions screen: date range, wallets, categories and amount.
 // The button at the bottom shows how many transactions match, updated as you pick.
-import { EMPTY_FILTERS, RANGES, walletIcon } from './calc.js';
+import { EMPTY_FILTERS, RANGES, formatNumber, walletIcon } from './calc.js';
 import { categoryIcon, esc } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');
   return d ? Number(d) : '';
 };
-const grouped = (n) => (n ? Number(n).toLocaleString('en-US') : '');
+const grouped = (n) => (n ? formatNumber(Number(n)) : '');
 
 /**
  * @param {object} o

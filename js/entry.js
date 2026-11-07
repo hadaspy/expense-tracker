@@ -180,7 +180,7 @@ export function openEntrySheet({ data, money, decimals = 0, tx = null, onSave, o
       </div>
       <div class="sheet-foot">
         ${error ? `<p class="form-status error" role="alert">${esc(error)}</p>` : ''}
-        <div class="keypad">${keys.map((k) => `<button type="button" data-act="key" data-v="${k}" aria-label="${k === 'back' ? 'Delete digit' : k}">${k === 'back' ? ICONS.backspace : k}</button>`).join('')}</div>
+        <div class="keypad">${keys.map((k) => `<button type="button" data-act="key" data-v="${k}" aria-label="${k === 'back' ? 'Delete digit' : k === '.' ? 'Decimal comma' : k}">${k === 'back' ? ICONS.backspace : k === '.' ? ',' : k}</button>`).join('')}</div>
         <button type="button" class="btn-primary save" data-act="save" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : tx ? 'Save changes' : 'Save'}</button>
       </div>`;
   }

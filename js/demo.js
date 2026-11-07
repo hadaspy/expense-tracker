@@ -7,12 +7,12 @@ export function demoData() {
   const pick = (list) => list[Math.floor(random() * list.length)];
 
   const wallets = [
-    { name: 'Main Bank', openingBalance: 8500000, type: 'Bank' },
-    { name: 'Savings Bank', openingBalance: 15000000, type: 'Bank' },
-    { name: 'Cash', openingBalance: 1500000, type: 'Cash' },
-    { name: 'E-wallet', openingBalance: 800000, type: 'E-wallet' },
-    { name: 'Credit Card', openingBalance: -1200000, type: 'Credit Card' },
-    { name: 'Stocks', openingBalance: 5000000, type: 'Stock' },
+    { name: 'Main Bank', openingBalance: 8500000, type: 'Bank', card: 'royal|orbs|•••• 0329' },
+    { name: 'Savings Bank', openingBalance: 15000000, type: 'Bank', card: 'gold|waves|Rainy-day money' },
+    { name: 'Cash', openingBalance: 1500000, type: 'Cash', card: '' },
+    { name: 'E-wallet', openingBalance: 800000, type: 'E-wallet', card: 'ocean|grid|' },
+    { name: 'Credit Card', openingBalance: -1200000, type: 'Credit Card', card: 'graphite|glass|•••• 8841' },
+    { name: 'Stocks', openingBalance: 5000000, type: 'Stock', card: 'violet|orbs|' },
   ];
   const categories = {
     Expense: {

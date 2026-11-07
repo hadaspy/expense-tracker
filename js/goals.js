@@ -1,13 +1,13 @@
 // Savings goal sheets: create / edit a goal, or quickly add money to a goal you track by hand.
 // A goal can follow a wallet's balance (e.g. a savings account), or a "saved" amount you update yourself.
-import { walletIcon } from './calc.js';
+import { formatNumber, walletIcon } from './calc.js';
 import { ICONS, esc } from './ui.js';
 
 const digits = (text) => {
   const d = String(text ?? '').replace(/[^\d]/g, '');
   return d ? Number(d) : 0;
 };
-const grouped = (n) => (n ? n.toLocaleString('en-US') : '');
+const grouped = (n) => (n ? formatNumber(n) : '');
 
 function mountSheet(label) {
   const backdrop = document.createElement('div');

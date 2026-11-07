@@ -1,5 +1,6 @@
 // "Edit budgets" sheet: one monthly limit per expense category, written to the sheet's Budgets tab.
 // Shows last month's spending next to each category as a starting point (MoneyCoach-style).
+import { formatNumber } from './calc.js';
 import { categoryIcon, esc } from './ui.js';
 
 export function openBudgetSheet({ categories, budgets, lastMonth, lastMonthLabel, money, onSave }) {
@@ -38,7 +39,7 @@ export function openBudgetSheet({ categories, budgets, lastMonth, lastMonthLabel
                 <span class="budget-edit-name">${categoryIcon(c)} ${esc(c)}
                   ${lastMonth[c] ? `<small class="muted">${esc(money(lastMonth[c]))}</small>` : ''}
                 </span>
-                <input inputmode="numeric" pattern="[0-9.,]*" placeholder="—" data-cat="${esc(c)}" value="${esc(values[c] ? Number(values[c]).toLocaleString('en-US') : '')}" aria-label="Monthly limit for ${esc(c)}">
+                <input inputmode="numeric" pattern="[0-9.,]*" placeholder="—" data-cat="${esc(c)}" value="${esc(values[c] ? formatNumber(Number(values[c])) : '')}" aria-label="Monthly limit for ${esc(c)}">
               </label>
             </li>`).join('')}
         </ul>
@@ -84,7 +85,7 @@ export function openBudgetSheet({ categories, budgets, lastMonth, lastMonthLabel
     if (!input.dataset.cat) return;
     const number = parse(input.value);
     values[input.dataset.cat] = number ? String(number) : '';
-    input.value = number ? number.toLocaleString('en-US') : '';
+    input.value = number ? formatNumber(number) : '';
     sheet.querySelector('.budget-total strong').textContent = money(total());
   });
 

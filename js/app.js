@@ -8,6 +8,7 @@ import {
 } from './calc.js';
 import { openBalanceSheet } from './balance.js';
 import { openBudgetSheet } from './budgets.js';
+import { cardHtml, openCardSheet, parseCard } from './cards.js';
 import { cashFlowChart, readout, segmentedBar } from './charts.js';
 import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
@@ -15,8 +16,8 @@ import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
 import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
 
-const APP_VERSION = '2.0.0';
-const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache' };
+const APP_VERSION = '3.0.0';
+const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'transactions', 'budgets', 'reports'];
 const TAB_TITLES = { home: 'Home', transactions: 'Transactions', budgets: 'Plan', reports: 'Reports' };
@@ -62,6 +63,27 @@ const state = {
 const decimals = () => Number(settings.decimals) || 0;
 const currency = () => settings.currency || (isDemo ? 'Rp' : '');
 const money = (value) => formatMoney(value, { currency: currency(), decimals: decimals() });
+
+// ---------- appearance: light, dark, or follow the iPhone (index.html applies it before first paint) ----------
+
+let appearance = storage.get(KEYS.appearance) || 'auto'; // 'auto' | 'light' | 'dark'
+const darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+
+function applyTheme() {
+  const dark = appearance === 'dark' || (appearance === 'auto' && !!darkQuery?.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  // Colour of the iPhone status bar area
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', dark ? '#070c1c' : '#e8edfb'));
+}
+function setAppearance(value) {
+  appearance = value;
+  storage.set(KEYS.appearance, value);
+  applyTheme();
+  render();
+}
+darkQuery?.addEventListener?.('change', () => { if (appearance === 'auto') { applyTheme(); render(); } });
+applyTheme();
 
 let memo = null;
 /** Transactions with parsed dates + wallet balances, recalculated only when the data changes. */
@@ -236,6 +258,19 @@ async function saveBalance(name, balance) {
   toast(`${name} balance updated`);
 }
 
+async function saveCard(name, card) {
+  if (!isDemo) await apiPost({ action: 'setWalletCard', wallet: name, card });
+  setData({ wallets: state.data.wallets.map((w) => (w.name === name ? { ...w, card } : w)) });
+  toast('Card saved');
+}
+
+function openCard(name) {
+  const wallet = (state.data.wallets || []).find((w) => w.name === name);
+  if (!wallet) return;
+  const balance = computed().balances.get(name) || 0;
+  openCardSheet({ wallet, amountHtml: cardMoney(balance), negative: balance < 0, onSave: (card) => saveCard(name, card) });
+}
+
 function openBalance(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   if (!wallet) return;
@@ -278,6 +313,68 @@ function bigMoney(value) {
   const number = formatMoney(Math.abs(value), { decimals: decimals() });
   const cur = currency();
   return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num" data-count="${Math.abs(value)}">${esc(number)}</span>`;
+}
+
+/** Amount for a wallet card: smaller currency, true minus sign, no count-up animation inside sheets. */
+function cardMoney(value) {
+  const cur = currency();
+  return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num">${esc(formatMoney(Math.abs(value), { decimals: decimals() }))}</span>`;
+}
+
+/** The swipeable wallet cards on Home: "All accounts" first, then every wallet in sheet order. */
+function walletCards() {
+  const { balances } = computed();
+  const wallets = state.data.wallets || [];
+  const worth = netWorth(balances);
+  const total = cardHtml({
+    title: 'All accounts',
+    kicker: `${wallets.length} wallet${wallets.length === 1 ? '' : 's'}`,
+    caption: 'Net worth',
+    amountHtml: bigMoney(worth.net),
+    footHtml: `Assets ${esc(money(worth.assets))} · Debts ${esc(money(worth.debts))}`,
+    style: { colour: 'midnight', pattern: 'glass' },
+    attrs: 'data-action="scroll" data-target="accounts" aria-label="All accounts: see the list"',
+    negative: worth.net < 0,
+  });
+  const cards = wallets.map((w) => {
+    const balance = balances.get(w.name) || 0;
+    const style = parseCard(w.card, w.type);
+    return cardHtml({
+      title: w.name,
+      kicker: `${walletIcon(w.type)} ${w.type || 'Other'}`,
+      caption: balance < 0 ? 'Owed' : 'Balance',
+      amountHtml: bigMoney(balance),
+      footHtml: esc(style.label),
+      style,
+      attrs: `data-action="wallet" data-name="${esc(w.name)}" aria-label="${esc(w.name)}: ${esc(money(balance))}"`,
+      negative: balance < 0,
+    });
+  });
+  return `
+    <section class="wcards-wrap" aria-label="Wallets">
+      <div class="wcards">${total}${cards.join('')}</div>
+      <p class="wcards-hint">Swipe for your wallets · tap one to open or customize it</p>
+    </section>`;
+}
+
+/** "Left to spend" as a regular card (Home): the wallet cards are the headline now. */
+function planCard(plan, monthName) {
+  const over = plan.left < 0;
+  const label = plan.mode === 'budget' ? 'Left to spend' : 'Left this month';
+  const sub = plan.mode === 'budget' ? `of ${money(plan.total)} budgeted` : `income ${money(plan.income)} − spending ${money(plan.expense)}`;
+  const perDay = over
+    ? `<span class="neg">Over by ${nb(-plan.left)}</span>`
+    : plan.daysLeft > 0 && plan.left > 0
+      ? `≈ <strong>${nb(plan.perDay)}</strong> a day · ${plan.daysLeft} day${plan.daysLeft === 1 ? '' : 's'} left`
+      : '';
+  return `
+    <section class="card plan-card">
+      <span class="tile-head"><span class="overline">${label} · ${esc(monthName)}</span><button class="link small" data-action="plan" data-plan="budgets">Budgets</button></span>
+      <strong class="plan-amount ${over ? 'neg' : ''}">${nb(plan.left)}</strong>
+      <span class="tile-sub">${esc(sub)}</span>
+      ${plan.total > 0 || plan.used > 0 ? bar(plan.fraction, budgetClass(plan.fraction)) : ''}
+      ${perDay ? `<span class="plan-perday">${perDay}</span>` : ''}
+    </section>`;
 }
 
 function txRow(tx, { perspective = null, query = '' } = {}) {
@@ -434,7 +531,6 @@ function renderHome() {
   const plan = monthPlan(state.data.budgets, monthTxs, now.getFullYear(), now.getMonth(), now);
   const insights = monthInsights(txs, now.getFullYear(), now.getMonth(), now);
   const groups = groupWallets(state.data.wallets || [], balances);
-  const worth = netWorth(balances);
   const goals = goalsWithProgress();
 
   const change = insights.expenseChange;
@@ -479,7 +575,8 @@ function renderHome() {
     </ul>`).join('');
 
   return `
-    ${planHero(plan, now.toLocaleDateString('en-GB', { month: 'long' }), { split: false })}
+    ${walletCards()}
+    ${planCard(plan, now.toLocaleDateString('en-GB', { month: 'long' }))}
     <section class="bento">
       <div class="card tile">
         <span class="overline">Spent</span>
@@ -491,11 +588,6 @@ function renderHome() {
         <strong class="tile-big serif">${nb(plan.income)}</strong>
         <span class="tile-sub">this month</span>
       </div>
-      <button class="card tile wide" data-action="scroll" data-target="accounts">
-        <span class="tile-head"><span class="overline">Net worth</span><span class="row-chevron">${ICONS.chevron}</span></span>
-        <strong class="tile-big serif ${worth.net < 0 ? 'neg' : ''}">${nb(worth.net)}</strong>
-        <span class="tile-sub">Assets ${nb(worth.assets)} · Debts <span class="${worth.debts ? 'neg' : ''}">${nb(worth.debts)}</span></span>
-      </button>
       ${goalTile}
     </section>
     ${budgetsHtml}
@@ -783,19 +875,29 @@ function renderWallet(name) {
   const now = new Date();
   const flow = walletFlow(name, inMonth(mine, now.getFullYear(), now.getMonth()));
   const balance = balances.get(name) || 0;
+  const style = parseCard(wallet?.card, type);
   return `
-    <section class="hero-block">
-      <p class="overline">${walletIcon(type)} ${esc(type)} · balance</p>
-      <p class="display ${balance < 0 ? 'neg' : ''}">${bigMoney(balance)}</p>
-      <div class="hero-split">
+    <section class="wallet-head">
+      ${cardHtml({
+        title: name,
+        kicker: `${walletIcon(type)} ${type}`,
+        caption: balance < 0 ? 'Owed' : 'Balance',
+        amountHtml: bigMoney(balance),
+        footHtml: esc(style.label),
+        style,
+        tag: 'div',
+        negative: balance < 0,
+      })}
+      ${wallet ? `
+      <div class="wallet-buttons">
+        <button class="action-btn" data-action="adjust-balance" data-name="${esc(name)}">${ICONS.refresh}<span>Adjust balance</span></button>
+        <button class="action-btn" data-action="customize-card" data-name="${esc(name)}">${ICONS.palette}<span>Customize card</span></button>
+      </div>` : ''}
+      <div class="card wallet-flow">
         <div><span class="overline">In this month</span><strong class="pos">${nb(flow.moneyIn)}</strong></div>
         <div><span class="overline">Out this month</span><strong>${nb(flow.moneyOut)}</strong></div>
       </div>
-      ${wallet ? `
-      <div class="wallet-actions">
-        <span class="muted small">Opening balance ${esc(money(wallet.openingBalance))}</span>
-        <button class="pill-btn" data-action="adjust-balance" data-name="${esc(name)}">Adjust balance</button>
-      </div>` : ''}
+      ${wallet ? `<p class="muted small wallet-opening">Opening balance ${esc(money(wallet.openingBalance))}</p>` : ''}
     </section>
     <section class="gap-lg">
       ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
@@ -821,8 +923,8 @@ function settingsForm({ firstRun }) {
         </label>
         <label>Decimals
           <select name="decimals">
-            <option value="0" ${decimals() === 2 ? '' : 'selected'}>0 (25,000)</option>
-            <option value="2" ${decimals() === 2 ? 'selected' : ''}>2 (25.00)</option>
+            <option value="0" ${decimals() === 2 ? '' : 'selected'}>0 (25.000)</option>
+            <option value="2" ${decimals() === 2 ? 'selected' : ''}>2 (25,00)</option>
           </select>
         </label>
       </div>
@@ -831,8 +933,21 @@ function settingsForm({ firstRun }) {
     </form>`;
 }
 
+function appearancePicker() {
+  return `
+    <section>
+      ${sectionTitle('Appearance')}
+      <div class="segmented three" role="radiogroup" aria-label="Appearance">
+        ${[['auto', 'Match iPhone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, label]) => `
+          <button type="button" class="seg ${appearance === v ? 'active' : ''}" data-action="appearance" data-v="${v}" role="radio" aria-checked="${appearance === v}">${label}</button>`).join('')}
+      </div>
+    </section>`;
+}
+
 function renderSettings() {
   return `
+    ${appearancePicker()}
+    <section class="gap-lg">${sectionTitle('Connection')}</section>
     ${settingsForm({ firstRun: false })}
     <section class="gap-xl">
       ${sectionTitle('About')}
@@ -890,6 +1005,7 @@ function headerHtml() {
         <p class="overline status">${!inner && state.tab === 'home' ? `${esc(date)} · ` : ''}${esc(statusText())}</p>
         <h1>${esc(titleText())}</h1>
       </div>
+      <button class="icon-btn" data-action="toggle-theme" aria-label="${isDark() ? 'Switch to light mode' : 'Switch to dark mode'}">${isDark() ? ICONS.sun : ICONS.moon}</button>
       ${!isDemo ? `<button class="icon-btn ${state.loading ? 'spin' : ''}" data-action="refresh" aria-label="Refresh" ${state.loading ? 'disabled' : ''}>${ICONS.refresh}</button>` : ''}
       ${!inner && !isDemo ? `<button class="icon-btn" data-action="settings" aria-label="Settings">${ICONS.settings}</button>` : ''}
     </div>
@@ -930,7 +1046,8 @@ function countUp(root) {
     const start = performance.now();
     const duration = 900;
     const step = (now) => {
-      const t = Math.min(1, (now - start) / duration);
+      // The first frame's timestamp can be slightly earlier than `start`; never let progress go below 0
+      const t = Math.min(1, Math.max(0, (now - start) / duration));
       const eased = 1 - (1 - t) ** 4; // ease-out quart: fast start, gentle landing
       el.textContent = formatMoney(target * eased, { decimals: decimals() });
       if (t < 1 && el.isConnected) requestAnimationFrame(step);
@@ -951,9 +1068,8 @@ function render() {
     <header class="topbar">${headerHtml()}</header>
     <main class="content ${animate ? 'enter' : ''}">${mainHtml()}</main>
     <nav class="tabbar">
-      ${tabButton('home')}${tabButton('transactions')}
+      <div class="tab-group">${tabButton('home')}${tabButton('transactions')}${tabButton('budgets')}${tabButton('reports')}</div>
       <button class="tab-add" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
-      ${tabButton('budgets')}${tabButton('reports')}
     </nav>`;
   // Numbers count up the first time each screen opens after launching the app; after that they just appear
   const screen = JSON.stringify([state.tab, state.plan, state.view]);
@@ -1079,6 +1195,12 @@ app.addEventListener('click', async (event) => {
     openEntry();
   } else if (action === 'edit-budgets') {
     openBudgets();
+  } else if (action === 'toggle-theme') {
+    setAppearance(isDark() ? 'light' : 'dark');
+  } else if (action === 'appearance') {
+    setAppearance(target.dataset.v);
+  } else if (action === 'customize-card') {
+    openCard(target.dataset.name);
   } else if (action === 'adjust-balance') {
     openBalance(target.dataset.name);
   } else if (action === 'add-goal') {
