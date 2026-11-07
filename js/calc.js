@@ -168,6 +168,102 @@ export function monthPlan(budgets, monthTransactions, year, month, now = new Dat
   };
 }
 
+/**
+ * Stable chart colours: the first 7 expense categories in the sheet's order get slots 1–7,
+ * the rest share "Other". Colour follows the category, never its rank, so it's the same every month.
+ */
+export const COLOR_SLOTS = 7;
+export function categorySlots(expenseCategoryNames) {
+  const slots = new Map();
+  expenseCategoryNames.slice(0, COLOR_SLOTS).forEach((name, i) => slots.set(name, i + 1));
+  return slots;
+}
+
+/**
+ * Parts for the "where it went" segmented bar: the biggest coloured categories (up to `maxParts`),
+ * everything else folded into "Other". Each part: {name, total, share, slot (0 = Other)}.
+ */
+export function spendingParts(transactions, slots, maxParts = 5) {
+  const categories = byCategory(transactions, EXPENSE);
+  const total = categories.reduce((sum, c) => sum + c.total, 0);
+  if (!total) return [];
+  const parts = [];
+  let other = 0;
+  for (const c of categories) {
+    const slot = slots.get(c.category);
+    if (slot && parts.length < maxParts && c.share >= 0.03) parts.push({ name: c.category, total: c.total, share: c.share, slot });
+    else other += c.total;
+  }
+  if (other > 0) parts.push({ name: 'Other', total: other, share: other / total, slot: 0 });
+  return parts;
+}
+
+/** Income and expenses for `count` months ending with (year, month), oldest first. */
+export function cashFlow(transactions, year, month, count = 6) {
+  const result = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(year, month - i, 1);
+    const totals = monthTotals(inMonth(transactions, d.getFullYear(), d.getMonth()));
+    result.push({ year: d.getFullYear(), month: d.getMonth(), ...totals });
+  }
+  return result;
+}
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** Spendee-style insights for one month, compared with the month before. */
+export function monthInsights(transactions, year, month, now = new Date()) {
+  const monthTxs = inMonth(transactions, year, month);
+  const prev = new Date(year, month - 1, 1);
+  const prevTotals = monthTotals(inMonth(transactions, prev.getFullYear(), prev.getMonth()));
+  const totals = monthTotals(monthTxs);
+  const isCurrent = now.getFullYear() === year && now.getMonth() === month;
+  const days = isCurrent ? now.getDate() : daysInMonth(year, month);
+
+  const expenses = monthTxs.filter((tx) => tx.type === EXPENSE);
+  const byWeekday = new Array(7).fill(0);
+  for (const tx of expenses) byWeekday[tx.when.getDay()] += tx.amount;
+  const busiest = byWeekday.indexOf(Math.max(...byWeekday));
+  const biggest = expenses.reduce((max, tx) => (!max || tx.amount > max.amount ? tx : max), null);
+
+  // Compare spending with the same number of days last month when this month isn't finished
+  let prevComparable = prevTotals.expense;
+  if (isCurrent) {
+    const cutoff = new Date(prev.getFullYear(), prev.getMonth(), Math.min(now.getDate(), daysInMonth(prev.getFullYear(), prev.getMonth())), 23, 59);
+    prevComparable = monthTotals(inMonth(transactions, prev.getFullYear(), prev.getMonth()).filter((tx) => tx.when <= cutoff)).expense;
+  }
+
+  return {
+    count: monthTxs.length,
+    avgPerDay: totals.expense / days,
+    busiestDay: expenses.length ? { name: WEEKDAYS[busiest], total: byWeekday[busiest] } : null,
+    biggest,
+    previousMonth: prev,
+    expenseChange: prevComparable > 0 ? totals.expense / prevComparable - 1 : null,
+    comparedToDate: isCurrent,
+  };
+}
+
+/** Rounds an axis maximum up to a clean number (1, 1.5, 2, 3, 4, 5, 6, 8 × 10ⁿ) — halves stay clean too. */
+export function niceMax(value) {
+  if (value <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(value));
+  for (const step of [1, 1.5, 2, 3, 4, 5, 6, 8, 10]) {
+    if (value <= step * power) return step * power;
+  }
+  return 10 * power;
+}
+
+/** 1500000 → "1.5M", 250000 → "250K", 900 → "900". */
+export function compactNumber(value) {
+  const abs = Math.abs(value);
+  const fmt = (n, suffix) => `${Number(n.toFixed(n < 10 ? 1 : 0))}${suffix}`;
+  if (abs >= 1e9) return fmt(value / 1e9, 'B');
+  if (abs >= 1e6) return fmt(value / 1e6, 'M');
+  if (abs >= 1e3) return fmt(value / 1e3, 'K');
+  return String(Math.round(value));
+}
+
 /** What you own (positive balances) minus what you owe (negative balances, e.g. credit cards). */
 export function netWorth(balances) {
   let assets = 0;

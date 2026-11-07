@@ -133,11 +133,11 @@ section { margin-top: 22px; }
   font-size: 34px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
+
   overflow-wrap: anywhere;
 }
 .hero-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px; color: var(--muted); }
-.hero-split strong { display: block; margin-top: 2px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.hero-split strong { display: block; margin-top: 2px; font-size: 16px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: currentColor; }
 .dot.pos { color: var(--pos); }
 .dot.neg { color: var(--neg); }
@@ -193,7 +193,7 @@ section { margin-top: 22px; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
 .stat { padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .stat span { font-size: 13px; color: var(--muted); }
-.stat strong { font-size: 17px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat strong { font-size: 17px; overflow-wrap: anywhere; }
 .stat.net { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
 .stats + .muted { margin: 12px 0 0; font-size: 14px; }
 .cat-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 14px; text-align: left; }
@@ -339,7 +339,7 @@ section { margin-top: 22px; }
 .hero-sub { margin: -10px 0 12px; font-size: 14px; color: var(--muted); }
 .hero .bar { height: 8px; border-radius: 4px; }
 .hero-perday { margin: 10px 0 0; font-size: 15px; }
-.hero-perday strong { font-variant-numeric: tabular-nums; }
+.hero-perday strong { font-weight: 700; }
 .hero .hero-split { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 
 .hint {
@@ -355,7 +355,7 @@ section { margin-top: 22px; }
 .networth { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; padding: 14px 16px; }
 .networth div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .networth span { font-size: 13px; }
-.networth strong { font-size: 15px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.networth strong { font-size: 15px; overflow-wrap: anywhere; }
 .networth div:first-child strong { font-size: 17px; }
 .group-title {
   display: flex;
@@ -482,7 +482,7 @@ body.sheet-open { overflow: hidden; }
   font-size: 40px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
+
   flex-shrink: 0;
   overflow-wrap: anywhere;
 }
@@ -560,3 +560,116 @@ body.sheet-open { overflow: hidden; }
   .amount-display { font-size: 32px; padding-top: 8px; }
   .keypad button { height: 40px; }
 }
+
+/* ---------- Phase 2: charts ---------- */
+/* Categorical slots 1–7 (validated with the dataviz checker: CVD + normal-vision separation pass in
+   both modes; light slots 3/4/5 are below 3:1 on white, so every value also appears as text). */
+:root {
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6;
+  --series-other: #b5b3ac;
+  --cf-income: #1baf7a;   /* slot 3 */
+  --cf-expense: #eb6834;  /* slot 2 */
+  --grid: #e5e5ea;
+  --axis-ink: #8e8e93;
+  --bar-ink: #8e8e93;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9;
+    --series-other: #5a5955;
+    --cf-income: #199e70;
+    --cf-expense: #d95926;
+    --grid: #2c2c2e;
+    --axis-ink: #8e8e93;
+    --bar-ink: #8e8e93;
+  }
+}
+[data-slot="1"] { --slot: var(--series-1); }
+[data-slot="2"] { --slot: var(--series-2); }
+[data-slot="3"] { --slot: var(--series-3); }
+[data-slot="4"] { --slot: var(--series-4); }
+[data-slot="5"] { --slot: var(--series-5); }
+[data-slot="6"] { --slot: var(--series-6); }
+[data-slot="7"] { --slot: var(--series-7); }
+[data-slot="0"] { --slot: var(--series-other); }
+
+.chart-card { padding: 16px; margin-bottom: 10px; }
+
+/* tall segmented bar: 28px, 2px surface gaps, 4px corners, share printed inside only when it fits */
+.seg-bar { display: flex; gap: 2px; height: 28px; }
+.seg-part {
+  display: flex;
+  align-items: center;
+  min-width: 3px;
+  padding-left: 7px;
+  border-radius: 4px;
+  background: var(--slot);
+  overflow: visible;
+}
+.seg-share { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+.seg-part[data-slot="4"] .seg-share { color: #0b0b0b; } /* near-black on yellow */
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; flex-shrink: 0; width: 10px; height: 10px; margin-right: 6px; border-radius: 3px; background: var(--slot, var(--series-other)); vertical-align: 0; }
+.legend .swatch { margin-right: 0; }
+.cf-income-swatch { background: var(--cf-income); }
+.cf-expense-swatch { background: var(--cf-expense); }
+.bar.ink > span { background: var(--bar-ink); }
+
+/* stat delta (▲ worse = red, ▼ better = green; arrow + text, never colour alone) */
+.stat .delta { font-size: 12px; font-weight: 600; }
+
+/* insight tiles */
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 22px; }
+.tile { padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tile-label { font-size: 13px; color: var(--muted); }
+.tile strong { font-size: 17px; overflow-wrap: anywhere; }
+.tile-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* cash flow columns */
+.cf .legend { margin: 0 0 8px; }
+.cf-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.cf-svg .grid { stroke: var(--grid); stroke-width: 1; }
+.cf-svg .grid.base { stroke: var(--line); }
+.cf-svg .axis { fill: var(--axis-ink); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cf-svg .axis.strong { fill: var(--text); font-weight: 700; }
+.cf-svg .cf-income { fill: var(--cf-income); }
+.cf-svg .cf-expense { fill: var(--cf-expense); }
+.cf-svg .cf-highlight { fill: color-mix(in srgb, var(--accent) 9%, transparent); }
+.cf-svg .cf-hit { fill: transparent; cursor: pointer; outline: none; }
+.cf-svg .cf-hit:focus-visible { stroke: var(--accent); stroke-width: 2; }
+.cf-readout { margin: 8px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
+.cf-readout strong { color: var(--text); }
+
+/* table view (every chart has a plain-table twin) */
+.table-view { margin-top: 10px; font-size: 13px; }
+.table-view summary { color: var(--accent); font-weight: 600; cursor: pointer; }
+.table-view table { width: 100%; margin-top: 8px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.table-view th, .table-view td { padding: 6px 4px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.table-view th:first-child, .table-view td:first-child { text-align: left; }
+.table-view th { color: var(--muted); font-weight: 600; }
+
+/* budget editor */
+.budget-edit li { padding: 0; }
+.budget-edit-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+.budget-edit-name { flex: 1; min-width: 0; display: flex; flex-direction: column; font-weight: 500; }
+.budget-edit-name small { font-size: 12px; font-weight: 400; }
+.budget-edit input {
+  width: 130px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.budget-edit input:focus { border-color: var(--accent); }
+.budget-total { margin: 0 0 8px; text-align: center; font-size: 14px; color: var(--muted); }
+.budget-total strong { color: var(--text); }
+.hint .link { font-size: 14px; }
+.empty-card .btn-primary { margin-top: 16px; }

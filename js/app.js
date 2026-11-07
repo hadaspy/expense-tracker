@@ -2,14 +2,17 @@
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
   EXPENSE, INCOME, TRANSFER,
-  byCategory, dayLabel, daysInMonth, formatMoney, groupWallets, inMonth, monthLabel, monthPlan,
-  monthTotals, netWorth, prepareTransactions, timeAgo, walletBalances, walletFlow, walletIcon,
+  byCategory, cashFlow, categorySlots, dayLabel, formatMoney, groupWallets, inMonth, monthInsights,
+  monthLabel, monthPlan, monthTotals, netWorth, prepareTransactions, spendingParts, timeAgo,
+  walletBalances, walletFlow, walletIcon,
 } from './calc.js';
+import { openBudgetSheet } from './budgets.js';
+import { cashFlowChart, readout, segmentedBar } from './charts.js';
 import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
 import { ICONS, categoryIcon, esc } from './ui.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'transactions', 'budgets', 'reports'];
@@ -156,6 +159,32 @@ function openEntry(id = null) {
     tx,
     onSave: (transaction) => saveTransaction(transaction, tx ? tx.id : null),
     onDelete: tx ? (txId) => deleteTransaction(txId) : null,
+  });
+}
+
+async function saveBudgets(budgets) {
+  const saved = isDemo ? budgets : (await apiPost({ action: 'setBudgets', budgets })).budgets;
+  state.data = { ...state.data, budgets: saved };
+  if (!isDemo) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
+  render();
+  toast('Budgets saved');
+}
+
+function openBudgets() {
+  if (!state.data) return;
+  const { txs } = computed();
+  const now = new Date();
+  const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonth = Object.fromEntries(
+    byCategory(inMonth(txs, last.getFullYear(), last.getMonth()), EXPENSE).map((c) => [c.category, c.total]),
+  );
+  openBudgetSheet({
+    categories: Object.keys(state.data.categories?.Expense || {}),
+    budgets: state.data.budgets || {},
+    lastMonth,
+    lastMonthLabel: Object.keys(lastMonth).length ? monthLabel(last.getFullYear(), last.getMonth()) : '',
+    money,
+    onSave: saveBudgets,
   });
 }
 
@@ -308,7 +337,7 @@ function renderHome() {
         <h2 class="section-title"><span>Budgets</span><button class="link" data-action="tab" data-tab="budgets">See all</button></h2>
         <ul class="card list padded">${topBudgets.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
       </section>`
-    : `<p class="hint">💡 Add monthly limits in the <strong>Budgets</strong> tab of your sheet to see how much you can spend per day.</p>`;
+    : `<p class="hint">💡 Set monthly budgets to see how much you can spend per day. <button class="link" data-action="edit-budgets">Set budgets</button></p>`;
 
   const walletGroups = groups.map((group) => `
     <h3 class="group-title"><span>${group.icon} ${esc(group.type)}</span>${group.wallets.length > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
@@ -351,9 +380,8 @@ function renderBudgets() {
       <section class="card empty-card">
         <p class="empty-icon">🎯</p>
         <h2>No budgets yet</h2>
-        <p class="muted">Open your Google Sheet, go to the <strong>Budgets</strong> tab and add one row per category:</p>
-        <p class="code">Food &amp; Drinks | 3000000</p>
-        <p class="muted">Then tap ↻ here. You'll see what's left to spend, a daily allowance, and warnings at 75% and 90%.</p>
+        <p class="muted">Set a monthly limit for the categories you want to watch. You'll see what's left to spend, a daily allowance, and warnings at 75% and 90%.</p>
+        <button class="btn-primary" data-action="edit-budgets">Set budgets</button>
       </section>`;
   }
   const sorted = [...plan.budgets].sort((a, b) => b.fraction - a.fraction);
@@ -361,10 +389,10 @@ function renderBudgets() {
     ${monthNav()}
     ${planCard(plan, { compact: true })}
     <section>
-      <h2 class="section-title"><span>By category</span><span class="muted">${sorted.length}</span></h2>
+      <h2 class="section-title"><span>By category</span><button class="link" data-action="edit-budgets">Edit</button></h2>
       <ul class="card list padded">${sorted.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
     </section>
-    <p class="hint">Edit limits in the Budgets tab of your sheet, then tap ↻.</p>`;
+    <p class="hint small">Budgets repeat every month. The Telegram bot uses the same limits.</p>`;
 }
 
 function renderReports() {
@@ -372,21 +400,22 @@ function renderReports() {
   const { year, month } = state.month;
   const monthTxs = inMonth(txs, year, month);
   const totals = monthTotals(monthTxs);
-  const now = new Date();
-  const isCurrent = year === now.getFullYear() && month === now.getMonth();
-  const days = isCurrent ? now.getDate() : daysInMonth(year, month);
+  const insights = monthInsights(txs, year, month, new Date());
+  const slots = categorySlots(Object.keys(state.data.categories?.Expense || {}));
+  const parts = spendingParts(monthTxs, slots);
+  const flow = cashFlow(txs, year, month, 6);
 
-  if (!monthTxs.length) return `${monthNav()}<p class="empty">No transactions in this month.</p>`;
-
-  const categoryList = (type, cls) => byCategory(monthTxs, type).map((c) => {
+  // Ranked list: one neutral bar colour (they're all the same measure); the swatch carries identity
+  const categoryList = (type) => byCategory(monthTxs, type).map((c) => {
     const open = state.expanded.has(`${type}:${c.category}`);
+    const slot = type === EXPENSE ? slots.get(c.category) || 0 : null;
     return `
       <li>
         <button class="cat-row" data-action="toggle-cat" data-key="${esc(`${type}:${c.category}`)}" aria-expanded="${open}">
           <span class="cat-icon">${categoryIcon(c.category)}</span>
           <span class="cat-main">
-            <span class="cat-line"><span>${esc(c.category)}</span><span>${esc(money(c.total))}</span></span>
-            ${bar(c.share, cls)}
+            <span class="cat-line"><span>${slot !== null ? `<span class="swatch" data-slot="${slot}"></span>` : ''}${esc(c.category)}</span><span>${esc(money(c.total))}</span></span>
+            ${bar(c.share, 'ink')}
           </span>
           <span class="cat-share">${Math.round(c.share * 100)}%</span>
         </button>
@@ -394,20 +423,58 @@ function renderReports() {
       </li>`;
   }).join('');
 
-  const incomeList = categoryList(INCOME, 'pos');
+  const prevName = insights.previousMonth.toLocaleDateString('en-GB', { month: 'short' });
+  const change = insights.expenseChange;
+  const delta = change === null || !isFinite(change) ? '' : `
+    <span class="delta ${change > 0 ? 'neg' : 'pos'}" title="${insights.comparedToDate ? `Compared with the same days of ${prevName}` : `Compared with ${prevName}`}">
+      ${change > 0 ? '▲' : '▼'} ${Math.abs(Math.round(change * 100))}% vs ${insights.comparedToDate ? `same days in ${prevName}` : prevName}
+    </span>`;
+
+  const biggest = insights.biggest;
+  const tiles = insights.count ? `
+    <section class="tiles">
+      <div class="card tile"><span class="tile-label">Average per day</span><strong>${esc(money(insights.avgPerDay))}</strong></div>
+      <div class="card tile"><span class="tile-label">Busiest day</span><strong>${insights.busiestDay ? esc(insights.busiestDay.name) : '—'}</strong>
+        ${insights.busiestDay ? `<span class="tile-sub">${esc(money(insights.busiestDay.total))} spent</span>` : ''}</div>
+      <div class="card tile"><span class="tile-label">Biggest expense</span><strong>${biggest ? esc(money(biggest.amount)) : '—'}</strong>
+        ${biggest ? `<span class="tile-sub">${categoryIcon(biggest.category)} ${esc(biggest.note || biggest.subcategory || biggest.category)}</span>` : ''}</div>
+      <div class="card tile"><span class="tile-label">Transactions</span><strong>${insights.count}</strong>
+        ${totals.income > 0 ? `<span class="tile-sub">Saved ${Math.round(Math.max(0, totals.net) / totals.income * 100)}% of income</span>` : ''}</div>
+    </section>` : '';
+
+  const incomeList = categoryList(INCOME);
+  const hasFlow = flow.some((m) => m.income || m.expense);
   return `
     ${monthNav()}
     <section class="stats">
       <div class="card stat"><span>Income</span><strong class="pos">${esc(money(totals.income))}</strong></div>
-      <div class="card stat"><span>Expenses</span><strong class="neg">${esc(money(totals.expense))}</strong></div>
+      <div class="card stat"><span>Expenses</span><strong class="neg">${esc(money(totals.expense))}</strong>${delta}</div>
       <div class="card stat net"><span>Net</span><strong class="${totals.net < 0 ? 'neg' : 'pos'}">${esc(money(totals.net))}</strong></div>
     </section>
-    <p class="muted center">
-      ${totals.income > 0 ? `Saved ${Math.round(Math.max(0, totals.net) / totals.income * 100)}% of income · ` : ''}
-      Avg ${esc(money(totals.expense / days))} per day
-    </p>
-    ${totals.expense ? `<section><h2 class="section-title"><span>Spending by category</span></h2><ul class="card list cats">${categoryList(EXPENSE, 'neg')}</ul></section>` : ''}
+    ${monthTxs.length ? '' : '<p class="empty">No transactions in this month.</p>'}
+    ${parts.length ? `
+      <section>
+        <h2 class="section-title"><span>Where it went</span></h2>
+        <div class="card chart-card">${segmentedBar(parts, money)}</div>
+        <ul class="card list cats">${categoryList(EXPENSE)}</ul>
+      </section>` : ''}
+    ${tiles}
+    ${hasFlow ? `
+      <section>
+        <h2 class="section-title"><span>Cash flow</span><span class="muted">tap a month</span></h2>
+        <div class="card chart-card">${cashFlowChart(flow, state.month, money)}</div>
+      </section>` : ''}
     ${incomeList ? `<section><h2 class="section-title"><span>Income by category</span></h2><ul class="card list cats">${incomeList}</ul></section>` : ''}`;
+}
+
+/** Shows a month's numbers under the cash-flow chart (on hover/focus); back to the selected month after. */
+function showCashFlowReadout(hit) {
+  const box = app.querySelector('.cf-readout');
+  if (!box) return;
+  const target = hit || app.querySelector('.cf-group.selected .cf-hit');
+  if (!target) return;
+  const d = target.dataset;
+  box.innerHTML = readout({ year: +d.year, month: +d.month, income: +d.income, expense: +d.expense, net: +d.net }, money);
 }
 
 function filteredTransactions() {
@@ -678,6 +745,11 @@ app.addEventListener('click', async (event) => {
     }
   } else if (action === 'add') {
     openEntry();
+  } else if (action === 'edit-budgets') {
+    openBudgets();
+  } else if (action === 'cf-month') {
+    state.month = { year: Number(target.dataset.year), month: Number(target.dataset.month) };
+    render();
   } else if (action === 'tab') {
     if (state.view !== null) history.back();
     state.view = null;
@@ -724,13 +796,26 @@ app.addEventListener('click', async (event) => {
   }
 });
 
-// Enter / Space on a focused transaction opens it (keyboard access)
+// Enter / Space on a focused transaction or chart month activates it (keyboard access)
 app.addEventListener('keydown', (event) => {
-  const tx = event.target.closest?.('.tx[data-action="edit-tx"]');
-  if (tx && (event.key === 'Enter' || event.key === ' ')) {
-    event.preventDefault();
-    openEntry(Number(tx.dataset.id));
-  }
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest?.('.tx[data-action="edit-tx"], .cf-hit');
+  if (!target) return;
+  event.preventDefault();
+  target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+});
+
+// Cash-flow chart: hovering or focusing a month shows its numbers under the chart
+app.addEventListener('pointerover', (event) => {
+  const hit = event.target.closest?.('.cf-hit');
+  if (hit) showCashFlowReadout(hit);
+});
+app.addEventListener('focusin', (event) => {
+  const hit = event.target.closest?.('.cf-hit');
+  if (hit) showCashFlowReadout(hit);
+});
+app.addEventListener('pointerout', (event) => {
+  if (event.target.closest?.('.cf-hit') && !event.relatedTarget?.closest?.('.cf-hit')) showCashFlowReadout(null);
 });
 
 // Typing in the search box only redraws the list, so the keyboard stays open

@@ -3,7 +3,7 @@
 // so a new version shows up the next time you open the app.
 // Requests to the Apps Script API are never cached here — the app keeps its own copy of your data.
 
-const CACHE = 'expense-tracker-v2';
+const CACHE = 'expense-tracker-v3';
 const APP_FILES = [
   './',
   './index.html',
@@ -13,6 +13,8 @@ const APP_FILES = [
   './js/demo.js',
   './js/entry.js',
   './js/ui.js',
+  './js/charts.js',
+  './js/budgets.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
