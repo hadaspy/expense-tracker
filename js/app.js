@@ -20,7 +20,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, reducedMotion } from './ui.js';
 
 const APP_VERSION = '4.0.0';
-const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance' };
+const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
 const TAB_TITLES = { home: 'Home', wallets: 'Wallets', budgets: 'Budgets', reports: 'Reports', more: 'More' };
@@ -61,6 +61,7 @@ const state = {
   fetchedAt: isDemo ? Date.now() : cached?.fetchedAt || null,
   loading: false,
   error: null,
+  menu: false,                // the ⋯ menu at the top right is open
   animate: true,              // play the entrance animation on the next render (navigation only)
 };
 
@@ -623,26 +624,6 @@ function budgetRings(plan, monthTxs) {
   return `<section class="brings" aria-label="Budgets">${items.join('')}</section>`;
 }
 
-/** "Left to spend" as a regular card (Home): the wallet cards are the headline now. */
-function planCard(plan, monthName) {
-  const over = plan.left < 0;
-  const label = plan.mode === 'budget' ? 'Left to spend' : 'Left this month';
-  const sub = plan.mode === 'budget' ? `of ${money(plan.total)} budgeted` : `income ${money(plan.income)} − spending ${money(plan.expense)}`;
-  const perDay = over
-    ? `<span class="neg">Over by ${nb(-plan.left)}</span>`
-    : plan.daysLeft > 0 && plan.left > 0
-      ? `≈ <strong>${nb(plan.perDay)}</strong> a day · ${plan.daysLeft} day${plan.daysLeft === 1 ? '' : 's'} left`
-      : '';
-  return `
-    <section class="card plan-card">
-      <span class="tile-head"><span class="overline">${label} · ${esc(monthName)}</span><button class="link small" data-action="plan" data-plan="budgets">Budgets</button></span>
-      <strong class="plan-amount ${over ? 'neg' : ''}">${nb(plan.left)}</strong>
-      <span class="tile-sub">${esc(sub)}</span>
-      ${plan.total > 0 || plan.used > 0 ? bar(plan.fraction, budgetClass(plan.fraction)) : ''}
-      ${perDay ? `<span class="plan-perday">${perDay}</span>` : ''}
-    </section>`;
-}
-
 function txRow(tx, { perspective = null, query = '' } = {}) {
   const cls = amountClass(tx, perspective);
   const sign = cls === 'neg' ? '−' : cls === 'pos' ? '+' : '';
@@ -838,7 +819,6 @@ function renderHome() {
     </div>
     ${budgetRings(plan, monthTxs)}
     ${walletCards()}
-    ${planCard(plan, cycleName)}
     <section class="card cash-card">
       <span class="tile-head"><span class="overline">Cash flow · ${esc(cycleName)}</span></span>
       <strong class="cash-net ${plan.income - plan.expense < 0 ? 'neg' : ''}">${plan.income - plan.expense < 0 ? '−' : ''}${nb(Math.abs(plan.income - plan.expense))}</strong>
@@ -1253,11 +1233,6 @@ function renderWallet(name) {
         tag: 'div',
         negative: balance < 0,
       })}
-      ${wallet ? `
-      <div class="wallet-buttons">
-        <button class="action-btn" data-action="adjust-balance" data-name="${esc(name)}">${ICONS.refresh}<span>Adjust balance</span></button>
-        <button class="action-btn" data-action="customize-card" data-name="${esc(name)}">${ICONS.palette}<span>Customize card</span></button>
-      </div>` : ''}
       <div class="card wallet-flow">
         ${flowStat('+', 'Income', nb(flow.moneyIn))}
         ${flowStat('−', 'Expense', nb(flow.moneyOut))}
@@ -1268,7 +1243,7 @@ function renderWallet(name) {
       ${sectionTitle('Transactions', `<span class="muted small">${mine.length}</span>`)}
       ${txListByDay(mine, { perspective: name })}
     </section>
-    ${wallet ? `<button class="btn-danger" data-action="remove-wallet" data-name="${esc(name)}">${ICONS.trash} Remove this wallet</button>` : ''}`;
+`;
 }
 
 function settingsForm({ firstRun }) {
@@ -1348,14 +1323,31 @@ const app = document.getElementById('app');
 
 function greeting(now = new Date()) {
   const h = now.getHours();
-  return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  return h < 5 ? 'Night' : h < 12 ? 'Morning' : h < 18 ? 'Afternoon' : 'Evening';
+}
+
+const userName = () => storage.get(KEYS.name) || 'Syu';
+
+function editName() {
+  const answer = prompt('What should the app call you?', userName());
+  if (answer === null) return;
+  const name = answer.replace(/\s+/g, ' ').trim().slice(0, 20);
+  storage.set(KEYS.name, name || 'Syu');
+  renderHeader();
 }
 
 function titleText() {
   if (typeof state.view === 'string') return VIEW_TITLES[state.view];
   if (state.view?.wallet) return state.view.wallet;
-  if (state.tab === 'home') return greeting();
   return TAB_TITLES[state.tab];
+}
+
+/** "Night, Syu": the name is a button that lets you change it. */
+function titleHtml() {
+  if (state.view === null && state.tab === 'home') {
+    return `${esc(greeting())}, <button class="name-btn" data-action="edit-name" aria-label="Your name: ${esc(userName())}. Tap to change.">${esc(userName())}</button>`;
+  }
+  return esc(titleText());
 }
 
 function statusText() {
@@ -1373,15 +1365,45 @@ function syncMark() {
   return `<span class="sync ${ok ? 'ok' : ''} ${state.loading ? 'busy' : ''}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${ICONS.check}</span>`;
 }
 
+/** What the ⋯ menu at the top right offers on the current screen (none → no button). */
+function menuItems() {
+  if (!state.data) return [];
+  const wallet = state.view?.wallet;
+  if (wallet) {
+    if (!(state.data.wallets || []).some((w) => w.name === wallet)) return [];
+    const attrs = `data-name="${esc(wallet)}"`;
+    return [
+      ['adjust-balance', attrs, ICONS.refresh, 'Adjust balance'],
+      ['customize-card', attrs, ICONS.palette, 'Customize card'],
+      ['remove-wallet', attrs, ICONS.trash, 'Remove wallet', true],
+    ];
+  }
+  if (state.view === 'transactions') return [['open-filters', '', ICONS.filter, 'Filters'], ['export', '', ICONS.share, 'Export as CSV']];
+  if (state.view === 'recurring') return [['new-recurring', '', ICONS.plus, 'New recurring item']];
+  if (state.view !== null) return [];
+  if (state.tab === 'wallets') return [['add-wallet', '', ICONS.plus, 'New wallet']];
+  if (state.tab === 'budgets') return [['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal']];
+  if (state.tab === 'home') return [['edit-budgets', '', ICONS.budgets, 'Edit budgets'], ['add-goal', '', ICONS.goal, 'New goal'], ['cycle', '', ICONS.calendar, 'Pay cycle']];
+  return [];
+}
+
 function headerHtml() {
   const inner = state.view !== null;
+  const items = menuItems();
+  if (!items.length) state.menu = false;
   return `
     <div class="topbar-row">
       ${inner ? `<button class="icon-btn back" data-action="back" aria-label="Back">${ICONS.back}</button>` : ''}
       <div class="titles">
-        <h1>${esc(titleText())}${syncMark()}</h1>
+        <h1>${titleHtml()}${syncMark()}</h1>
       </div>
+      <span class="hdr-loader ${state.loading ? 'on' : ''}" aria-hidden="true">${ICONS.refresh}</span>
+      ${items.length ? `<button class="icon-btn menu-btn ${state.menu ? 'open' : ''}" data-action="toggle-menu" aria-label="More options" aria-expanded="${state.menu}">${ICONS.more}</button>` : ''}
     </div>
+    ${state.menu && items.length ? `
+    <div class="menu-pop" role="menu">
+      ${items.map(([action, attrs, icon, label, danger]) => `<button role="menuitem" class="menu-item ${danger ? 'danger' : ''}" data-action="${action}" ${attrs}>${icon}<span>${label}</span></button>`).join('')}
+    </div>` : ''}
     ${isDemo ? '<p class="banner">Sample data — changes aren\'t saved. <a href="./">Exit preview</a></p>' : ''}
     ${state.error ? `<p class="banner error">Couldn't update: ${esc(state.error)}${state.data ? ' Showing saved data.' : ''}</p>` : ''}`;
 }
@@ -1389,7 +1411,6 @@ function headerHtml() {
 function renderHeader() {
   const header = document.querySelector('.topbar');
   if (header) header.innerHTML = headerHtml();
-  document.querySelector('.ptr')?.classList.toggle('loading', state.loading);
 }
 
 function mainHtml() {
@@ -1444,6 +1465,7 @@ function render() {
   app.innerHTML = `
     <header class="topbar">${headerHtml()}</header>
     <main class="content ${animate ? 'enter' : ''}">${mainHtml()}</main>
+    <div class="bottom-block" aria-hidden="true"></div>
     <button class="fab" data-action="add" aria-label="Add transaction" ${state.data ? '' : 'disabled'}>${ICONS.plus}</button>
     <nav class="tabbar" aria-label="Main">${TABS.map(tabButton).join('')}</nav>`;
   setupCarousel();
@@ -1548,9 +1570,11 @@ function refreshResults() {
 
 app.addEventListener('click', async (event) => {
   if (suppressClick) { event.preventDefault(); return; }
+  if (state.menu && !event.target.closest('.menu-pop, [data-action="toggle-menu"]')) { state.menu = false; renderHeader(); return; } // tap outside closes the menu
   const target = event.target.closest('[data-action]');
   if (!target) { closeSwipes(); return; }
   const action = target.dataset.action;
+  if (state.menu && action !== 'toggle-menu') { state.menu = false; renderHeader(); } // choosing an item closes it
 
   if (action === 'edit-tx') {
     const row = target.parentElement;
@@ -1586,6 +1610,11 @@ app.addEventListener('click', async (event) => {
   } else if (action === 'add-money') {
     const goal = findGoal(target.dataset.name);
     if (goal) openAddMoneySheet({ goal, money, onSave: saveGoal });
+  } else if (action === 'toggle-menu') {
+    state.menu = !state.menu;
+    renderHeader();
+  } else if (action === 'edit-name') {
+    editName();
   } else if (action === 'open-view') {
     openView(target.dataset.view);
   } else if (action === 'open-search') {
@@ -1752,26 +1781,25 @@ app.addEventListener('submit', async (event) => {
 
 // ---------- pull down to refresh, and swipe in from a screen edge for back / forward ----------
 
-const ptr = document.createElement('div');
-ptr.className = 'ptr';
-ptr.setAttribute('aria-hidden', 'true');
-ptr.innerHTML = ICONS.refresh;
-document.body.appendChild(ptr);
 const PULL_AT = 56;
 let pull = null;
 let edge = null;
 const noGesture = () => document.body.classList.contains('sheet-open');
 
+const loaderEl = () => document.querySelector('.hdr-loader');
+
+/** While you pull, the loader at the top right turns with your finger; it spins once you let go (see syncMark / headerHtml). */
 function showPull(distance) {
-  ptr.style.opacity = distance > 4 ? String(Math.min(1, distance / PULL_AT)) : '0';
-  ptr.style.transform = `translate(-50%, ${distance - 44}px) rotate(${distance * 4}deg)`;
-  ptr.classList.toggle('ready', distance >= PULL_AT);
+  const el = loaderEl();
+  if (!el) return;
+  el.style.transition = 'none';
+  el.style.opacity = distance > 4 ? String(Math.min(1, distance / PULL_AT)) : '0';
+  el.style.transform = `rotate(${distance * 5}deg)`;
+  el.classList.toggle('ready', distance >= PULL_AT);
 }
 function endPull() {
-  ptr.style.transition = '';
-  ptr.style.opacity = '';
-  ptr.style.transform = '';
-  ptr.classList.remove('ready');
+  const el = loaderEl();
+  if (el) { el.style.transition = ''; el.style.opacity = ''; el.style.transform = ''; el.classList.remove('ready'); }
   pull = null;
 }
 
@@ -1790,7 +1818,6 @@ window.addEventListener('touchmove', (event) => {
   const dy = t.clientY - pull.y;
   if (window.scrollY > 0 || dy <= 0 || Math.abs(dx) > dy) { if (pull.d) endPull(); else pull = null; return; }
   pull.d = Math.min(96, dy * 0.5);
-  ptr.style.transition = 'none';
   showPull(pull.d);
 }, { passive: true });
 

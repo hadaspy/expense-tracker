@@ -180,30 +180,46 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
 .sync.busy { animation: pulse 1.1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.2; } }
 
-/* pull down to refresh */
-.ptr {
-  position: fixed;
-  left: 50%;
-  top: calc(var(--safe-top) + 6px);
-  z-index: 30;
-  width: 38px;
-  height: 38px;
+.hdr-loader {
+  width: 30px;
+  height: 36px;
+  flex-shrink: 0;
   display: grid;
   place-items: center;
-  border-radius: 50%;
+  align-self: center;
   color: var(--accent-text);
-  background: var(--card);
-  box-shadow: var(--shadow-lift), inset 0 0 0 1px var(--edge);
   opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, -44px);
-  transition: opacity 0.25s, transform 0.3s var(--ease-out);
+  transition: opacity 0.25s;
 }
-:root[data-theme="dark"] .ptr { background: #141c33; }
-.ptr svg { width: 18px; height: 18px; }
-.ptr.ready { background: var(--accent); color: #fff; }
-.ptr.loading { opacity: 1; transform: translate(-50%, 12px); }
-.ptr.loading svg { animation: spin 0.9s linear infinite; }
+.hdr-loader svg { width: 19px; height: 19px; }
+.hdr-loader.on { opacity: 1; }
+.hdr-loader.on svg { animation: spin 0.9s linear infinite; }
+.hdr-loader.ready { color: var(--pos); }
+.menu-btn.open { background: var(--accent-soft) !important; color: var(--accent-text); }
+.menu-pop {
+  position: absolute;
+  right: 20px;
+  top: calc(var(--safe-top) + 58px);
+  z-index: 20;
+  min-width: 210px;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--card-solid, #fff);
+  box-shadow: var(--shadow-lift), inset 0 0 0 1px var(--edge);
+  animation: pop-in 0.22s var(--ease-out);
+  transform-origin: top right;
+}
+:root[data-theme="dark"] .menu-pop { background: #141c33; }
+@keyframes pop-in { from { opacity: 0; transform: scale(0.92) translateY(-6px); } }
+.menu-item { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 12px; border-radius: 12px; font-size: 14.5px; font-weight: 500; text-align: left; color: var(--text); }
+.menu-item svg { width: 19px; height: 19px; color: var(--accent-text); flex-shrink: 0; }
+.menu-item:active { background: var(--bar-bg); }
+.menu-item.danger, .menu-item.danger svg { color: var(--neg); }
+.name-btn { padding: 0; font: inherit; letter-spacing: inherit; color: var(--accent-text); border-bottom: 2px dotted currentColor; }
+
+/* the strip behind the tab bar: scrolling content stops here instead of showing through */
+.bottom-block { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; height: calc(var(--safe-bottom) + 86px); background: var(--bg); }
+.bottom-block::before { content: ""; position: absolute; left: 0; right: 0; top: -18px; height: 18px; background: linear-gradient(to top, var(--bg), transparent); }
 
 /* emoji follow the blue theme (they are wrapped in .emo by the app) */
 .emo { display: inline-block; filter: grayscale(1) sepia(1) hue-rotate(188deg) saturate(3.4) brightness(0.9); }
@@ -237,7 +253,7 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
 .banner.error { background: color-mix(in srgb, var(--neg) 16%, var(--card)); }
 
 /* ---------- content & rhythm ---------- */
-.content { padding: 4px 20px calc(var(--safe-bottom) + 160px); }
+.content { padding: 4px 20px calc(var(--safe-bottom) + 170px); }
 section { margin-top: 20px; }
 .gap-lg { margin-top: 30px; }
 .gap-xl { margin-top: 38px; }
