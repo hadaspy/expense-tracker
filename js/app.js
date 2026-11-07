@@ -19,7 +19,7 @@ import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion, walletIcon } from './ui.js';
 
-const APP_VERSION = '4.4.0';
+const APP_VERSION = '4.4.1';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];

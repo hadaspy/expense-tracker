@@ -77,7 +77,9 @@ export function openWalletSheet({ existing = [], wallet = null, onSave }) {
     else if (act === 'save') {
       const name = state.name.replace(/\s+/g, ' ').trim();
       if (!name) { error = 'Give the wallet a name.'; render(); return; }
-      if (existing.some((n) => n.toLowerCase() === name.toLowerCase() && n !== wallet?.name)) { error = `You already have a wallet called “${name}”.`; render(); return; }
+      // Changing only the capitals of its own name (Mandiri → MANDIRI) is fine; any other wallet with that name is not
+      const ownName = editing && name.toLowerCase() === wallet.name.toLowerCase();
+      if (!ownName && existing.some((n) => n.toLowerCase() === name.toLowerCase() && n !== wallet?.name)) { error = `You already have a wallet called “${name}”.`; render(); return; }
       busy = true;
       error = '';
       render();

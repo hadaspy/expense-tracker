@@ -401,7 +401,8 @@ button.wcard:active { transform: scale(0.98); }
 .wcard-foot { align-items: flex-end; }
 .wcard-foot-left { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .wcard-valid { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; font-size: 12.5px; font-weight: 500; letter-spacing: 0.05em; opacity: 0.95; white-space: nowrap; }
-.wcard-valid small { font-size: 6.5px; line-height: 1.15; font-weight: 600; letter-spacing: 0.08em; text-align: left; opacity: 0.85; }
+.wcard-valid small { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; font-size: 7px; line-height: 1; font-weight: 600; letter-spacing: 0.08em; opacity: 0.85; }
+.wcard-valid small span { display: block; }
 .net-logo { width: 46px; height: 29px; flex-shrink: 0; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18)); }
 .wcard-mid { display: flex; flex-direction: column; }
 .wcard-caption { font-size: 11px; font-weight: 500; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.06em; }
