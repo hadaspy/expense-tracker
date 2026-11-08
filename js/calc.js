@@ -344,6 +344,12 @@ export function formatNumber(value, decimals = 0) {
   return (value < 0 && Number(whole + (fraction || '')) !== 0 ? '-' : '') + grouped + (fraction ? `,${fraction}` : '');
 }
 
+/** Splits a formatted amount into the whole part ("12.345") and the decimals ("50", or "" when there are none). */
+export function splitNumber(value, decimals = 0) {
+  const [whole, fraction = ''] = formatNumber(Math.abs(value), decimals).replace('-', '').split(',');
+  return { whole, fraction };
+}
+
 export function formatMoney(value, { currency = '', decimals = 0 } = {}) {
   const number = formatNumber(Math.abs(value), decimals);
   const sign = value < 0 && /[1-9]/.test(number) ? '-' : ''; // never "-0"

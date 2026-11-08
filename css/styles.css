@@ -149,6 +149,7 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+.dec { font-size: 0.5em; font-weight: 600; margin-left: 0.08em; letter-spacing: 0; vertical-align: 0.82em; line-height: 0; opacity: 0.85; font-variant-numeric: tabular-nums; }
 .display .cur, .wcard-amount .cur { font-size: 0.55em; margin-right: 0.22em; letter-spacing: 0; vertical-align: 0.48em; opacity: 0.8; }
 
 /* ---------- header ---------- */
@@ -374,6 +375,19 @@ button.wcard:active { transform: scale(0.98); }
 .wallet-head .wcard, .card-preview .wcard { opacity: 1; }
 .wcard::before, .wcard::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; }
 .wcard::after { background: var(--grain); opacity: 0.8; }
+/* Texture: grain (default, above), plain (smooth), matte (flat, barely any grain), shiny (glossy sweep) */
+.finish-plain::after { background: none; }
+.finish-matte::after { background: var(--grain), rgba(120, 126, 142, 0.14); opacity: 0.3; }
+.finish-matte { box-shadow: 0 14px 26px -20px rgba(25, 35, 110, 0.6); }
+.finish-shiny::after {
+  opacity: 1;
+  background:
+    linear-gradient(112deg, transparent 18%, rgba(255, 255, 255, 0.42) 34%, rgba(255, 255, 255, 0.1) 44%, transparent 52%),
+    linear-gradient(112deg, transparent 66%, rgba(255, 255, 255, 0.22) 78%, transparent 90%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 38%);
+}
+.finish-shiny { box-shadow: 0 18px 34px -16px rgba(25, 35, 110, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -1px 0 rgba(0, 0, 0, 0.12); }
+.finish-shiny.is-light::after { background: linear-gradient(112deg, transparent 18%, rgba(255, 255, 255, 0.95) 34%, rgba(255, 255, 255, 0.25) 44%, transparent 52%), linear-gradient(112deg, transparent 66%, rgba(255, 255, 255, 0.6) 78%, transparent 90%); }
 .pattern-orbs::before {
   background:
     radial-gradient(circle at 88% 8%, rgba(255, 255, 255, 0.22) 0 24%, transparent 24.5%),

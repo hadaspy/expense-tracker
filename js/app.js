@@ -2,7 +2,7 @@
 // The API URL and key are stored only on this device (localStorage), never in these files.
 import {
   EMPTY_FILTERS, EXPENSE, FREQUENCY_NAMES, INCOME, RANGES, TRANSFER,
-  activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatDateTime, formatMoney,
+  activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatDateTime, formatMoney, splitNumber,
   goalProgress, groupWallets, inMonth, isBaseWallet, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
   occurrences, periodBounds, periodOf, periodRange, prepareTransactions, rangeBounds, setPayCycle, spendingParts, summarize,
   timeAgo, toCsv, walletBalances, walletFlow,
@@ -21,7 +21,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '4.6.0';
+const APP_VERSION = '4.7.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -591,13 +591,15 @@ function amountClass(tx, perspective) {
  * Signs use a true minus so the figure doesn't jump.
  */
 function bigMoney(value, cur = currency()) {
-  const number = formatMoney(Math.abs(value), { decimals: decimals() });
-  return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num" data-count="${Math.abs(value)}">${esc(number)}</span>`;
+  const { whole, fraction } = splitNumber(value, decimals());
+  const count = Number(whole.replace(/\./g, ''));
+  return `${cur ? `<span class="cur">${esc(cur)}</span>` : ''}${value < 0 && /[1-9]/.test(whole + fraction) ? '−' : ''}<span class="num" data-count="${count}">${esc(whole)}</span>${fraction ? `<sup class="dec">${fraction}</sup>` : ''}`;
 }
 
 /** Amount for a wallet card: smaller currency, true minus sign, no count-up animation inside sheets. */
 function cardMoney(value, cur = currency()) {
-  return `${value < 0 ? '−' : ''}${cur ? `<span class="cur">${esc(cur)}</span>` : ''}<span class="num">${esc(formatMoney(Math.abs(value), { decimals: decimals() }))}</span>`;
+  const { whole, fraction } = splitNumber(value, decimals());
+  return `${cur ? `<span class="cur">${esc(cur)}</span>` : ''}${value < 0 && /[1-9]/.test(whole + fraction) ? '−' : ''}<span class="num">${esc(whole)}</span>${fraction ? `<sup class="dec">${fraction}</sup>` : ''}`;
 }
 
 /** Income (+, green) or spending (−, red) with a round icon, used wherever money in/out is shown. */
@@ -1619,10 +1621,10 @@ function countUp(root) {
       // The first frame's timestamp can be slightly earlier than `start`; never let progress go below 0
       const t = Math.min(1, Math.max(0, (now - start) / duration));
       const eased = 1 - (1 - t) ** 4; // ease-out quart: fast start, gentle landing
-      el.textContent = formatMoney(target * eased, { decimals: decimals() });
+      el.textContent = formatMoney(Math.floor(target * eased));
       if (t < 1 && el.isConnected) requestAnimationFrame(step);
     };
-    el.textContent = formatMoney(0, { decimals: decimals() });
+    el.textContent = formatMoney(0);
     requestAnimationFrame(step);
   });
 }

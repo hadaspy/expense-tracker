@@ -20,6 +20,7 @@ export const CARD_COLOURS = [
   ['silver', 'Silver', 'linear-gradient(145deg, #d6dae1 0%, #b3b9c5 55%, #939ba9 100%)', true],
 ];
 
+export const CARD_FINISHES = [['grain', 'Grain'], ['plain', 'Plain'], ['matte', 'Matte'], ['shiny', 'Shiny']];
 export const CARD_SCHEMES = [['', 'None'], ['visa', 'Visa'], ['mastercard', 'Mastercard']];
 const isLight = (colour) => !!CARD_COLOURS.find(([id]) => id === colour)?.[3];
 
@@ -39,7 +40,7 @@ const TYPE_COLOURS = {
 
 /** "royal|waves|•••• 0329|visa" → {colour, pattern, label, scheme}, with type-based defaults. */
 export function parseCard(card, type = '') {
-  const [colour = '', pattern = '', label = '', scheme = '', valid = ''] = String(card || '').split('|');
+  const [colour = '', pattern = '', label = '', scheme = '', valid = '', finish = ''] = String(card || '').split('|');
   const known = CARD_COLOURS.some(([id]) => id === colour);
   return {
     colour: known ? colour : TYPE_COLOURS[String(type).toLowerCase()] || 'midnight',
@@ -47,11 +48,12 @@ export function parseCard(card, type = '') {
     label: label.slice(0, 24),
     scheme: CARD_SCHEMES.some(([id]) => id === scheme) ? scheme : '',
     valid: /^(0[1-9]|1[0-2])\/\d{2}$/.test(valid) ? valid : '',
+    finish: CARD_FINISHES.some(([id]) => id === finish) ? finish : 'grain',
   };
 }
 
-export const formatCard = ({ colour, pattern, label, scheme, valid }) =>
-  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || ''].join('|').replace(/\|+$/, '');
+export const formatCard = ({ colour, pattern, label, scheme, valid, finish }) =>
+  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || '', finish && finish !== 'grain' ? finish : ''].join('|').replace(/\|+$/, '');
 
 const background = (colour) => (CARD_COLOURS.find(([id]) => id === colour) || CARD_COLOURS[1])[2];
 
@@ -79,7 +81,7 @@ const NETWORKS = {
  */
 export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', style, attrs = '', tag = 'button', negative = false }) {
   return `
-    <${tag} class="wcard pattern-${style.pattern} ${isLight(style.colour) ? 'is-light' : ''} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
+    <${tag} class="wcard pattern-${style.pattern} finish-${style.finish || 'grain'} ${isLight(style.colour) ? 'is-light' : ''} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
       <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-title">${esc(title)}</span></span>
       ${CONTACTLESS}
       <span class="wcard-mid"><span class="wcard-caption">${esc(caption)}</span><span class="wcard-amount">${amountHtml}</span></span>
@@ -152,6 +154,10 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
         <div class="chip-row wrap">
           ${CARD_PATTERNS.map(([id, name]) => `<button type="button" class="chip ${style.pattern === id ? 'active' : ''}" data-act="pattern" data-v="${id}" aria-pressed="${style.pattern === id}">${name}</button>`).join('')}
         </div>
+        <p class="field-label">Texture</p>
+        <div class="chip-row wrap">
+          ${CARD_FINISHES.map(([id, name]) => `<button type="button" class="chip ${style.finish === id ? 'active' : ''}" data-act="finish" data-v="${id}" aria-pressed="${style.finish === id}">${name}</button>`).join('')}
+        </div>
         <p class="field-label">Card network <span class="muted">(optional)</span></p>
         <div class="chip-row wrap">
           ${CARD_SCHEMES.map(([id, name]) => `<button type="button" class="chip ${style.scheme === id ? 'active' : ''}" data-act="scheme" data-v="${id}" aria-pressed="${style.scheme === id}">${name}</button>`).join('')}
@@ -186,10 +192,11 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
     if (busy || !el) return;
     const { act, v } = el.dataset;
     if (act === 'cancel') { close(); return; }
-    if (act === 'colour' || act === 'pattern' || act === 'scheme' || act === 'reset') {
+    if (act === 'colour' || act === 'pattern' || act === 'finish' || act === 'scheme' || act === 'reset') {
       if (act === 'colour') style.colour = v;
       if (act === 'scheme') style.scheme = v;
       if (act === 'pattern') style.pattern = v;
+      if (act === 'finish') style.finish = v;
       if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '', valid: '' });
       const scroll = sheet.querySelector('.sheet-body').scrollTop;
       render();
