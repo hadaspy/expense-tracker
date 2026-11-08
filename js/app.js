@@ -21,7 +21,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '4.7.0';
+const APP_VERSION = '4.7.1';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -779,7 +779,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
           <span class="tx-detail">${detail}${tx.note ? ` · <em>${highlight(tx.note, query)}</em>` : ''}</span>
         </span>
         <span class="tx-side">
-          <span class="amount ${cls}">${sign}${esc(moneyFor(tx.wallet, tx.amount))}</span>
+          <span class="amount ${cls}">${sign}${listMoney(tx.amount, walletCurrency(tx.wallet))}</span>
           <span class="tx-time">${tx.id < 0 ? 'Saving…' : `#${tx.id}`} · ${time}</span>
         </span>
       </div>
@@ -801,7 +801,7 @@ function txListByDay(txs, { perspective = null, limit = state.limit, showMore = 
     const { baseNames } = computed();
     const out = day.txs.reduce((sum, t) => sum + (t.type === EXPENSE && baseNames.has(t.wallet) ? t.amount : 0), 0);
     return `
-      <h3 class="day"><span>${esc(day.label)}</span>${out ? `<span class="day-total">−${esc(money(out))}</span>` : ''}</h3>
+      <h3 class="day"><span>${esc(day.label)}</span>${out ? `<span class="day-total">−${listMoney(out)}</span>` : ''}</h3>
       <ul class="card list">${day.txs.map((tx) => txRow(tx, { perspective, query })).join('')}</ul>`;
   }).join('');
   if (showMore && txs.length > limit) {
@@ -816,6 +816,12 @@ function bar(fraction, cls = '') {
 }
 
 const budgetClass = (fraction) => (fraction > 1 ? 'neg' : fraction >= 0.9 ? 'warn' : fraction >= 0.75 ? 'caution' : 'pos');
+
+/** Amount for lists: "Rp 12.345" with the decimals (if on) as a small raised number. */
+function listMoney(value, cur = currency()) {
+  const { whole, fraction } = splitNumber(value, decimals());
+  return `${esc(cur ? `${cur} ` : '')}${esc(whole)}${fraction ? `<sup class="dec">${fraction}</sup>` : ''}`;
+}
 
 /** An amount that never breaks across lines ("Rp" stays with the number). */
 const nb = (value) => `<span class="nowrap">${esc(money(value))}</span>`;
@@ -1095,7 +1101,7 @@ function renderRecurring() {
             <span class="tx-title">${esc(title)}</span>
             <span class="tx-detail">${esc(FREQUENCY_NAMES[item.frequency] || item.frequency)} · ${where}</span>
           </span>
-          <span class="tx-side"><span class="amount ${cls}">${sign}${esc(moneyFor(item.wallet, item.amount))}</span></span>
+          <span class="tx-side"><span class="amount ${cls}">${sign}${listMoney(item.amount, walletCurrency(item.wallet))}</span></span>
         </button>
         <div class="goal-foot">
           <span class="muted small">${item.active ? `Next: ${esc(next)}` : 'Paused'}</span>
