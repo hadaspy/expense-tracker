@@ -21,7 +21,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '4.7.1';
+const APP_VERSION = '4.8.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -612,7 +612,7 @@ function flowStat(sign, label, html) {
     </div>`;
 }
 
-let carouselIndex = 0; // which card is centred (0 = All accounts); kept when the screen redraws
+const carouselPos = { home: 0, worth: 0 }; // which card is centred in each strip (0 = the first); kept when the screen redraws
 
 /**
  * The wallet cards on Home: "All accounts" then every wallet, as an endless swipe (the strip holds a few
@@ -628,7 +628,7 @@ function walletCards() {
     caption: 'Net worth',
     amountHtml: bigMoney(worth.net),
     footHtml: `<span class="foot-line">Assets ${esc(money(worth.assets))}</span><span class="foot-line">Debts ${esc(money(worth.debts))}</span>`,
-    style: { colour: 'midnight', pattern: 'glass' },
+    style: { colour: 'midnight', pattern: 'glass', finish: 'matte' },
     action: 'data-action="tab" data-tab="wallets"',
     label: 'All accounts: open the wallet list',
     negative: worth.net < 0,
@@ -648,7 +648,13 @@ function walletCards() {
       negative: balance < 0,
     });
   }
+  return carouselHtml('home', specs, 'Wallets');
+}
+
+/** A swipeable strip of cards (see walletCards) with a dot for each. `key` remembers where each strip was left. */
+function carouselHtml(key, specs, ariaLabel) {
   const n = specs.length;
+  const pos = carouselPos[key] % n;
   const copies = n < 2 ? 1 : n >= 5 ? 3 : 5; // few cards → more copies, so a long fling can't reach the end
   const html = [];
   for (let c = 0; c < copies; c++) {
@@ -656,16 +662,16 @@ function walletCards() {
     specs.forEach((spec, i) => {
       html.push(cardHtml({
         ...spec,
-        attrs: `${spec.action} data-i="${i}" ${real ? `aria-label="${esc(spec.label)}"` : 'aria-hidden="true" tabindex="-1"'}`,
+        attrs: `${spec.action || ''} data-i="${i}" ${real ? `aria-label="${esc(spec.label)}"` : 'aria-hidden="true" tabindex="-1"'}`,
       }));
     });
   }
   const dots = n > 1
-    ? `<div class="dots" role="group" aria-label="Choose a card">${specs.map((spec, i) => `<button type="button" class="dot ${i === carouselIndex % n ? 'active' : ''}" data-action="dot" data-i="${i}" aria-label="Show ${esc(spec.title)}"></button>`).join('')}</div>`
+    ? `<div class="dots" role="group" aria-label="Choose a card">${specs.map((spec, i) => `<button type="button" class="dot ${i === pos ? 'active' : ''}" data-action="dot" data-i="${i}" aria-label="Show ${esc(spec.title)}"></button>`).join('')}</div>`
     : '';
   return `
-    <section class="wcards-wrap" aria-label="Wallets">
-      <div class="wcards" data-n="${n}" data-copies="${copies}">${html.join('')}</div>
+    <section class="wcards-wrap" aria-label="${esc(ariaLabel)}">
+      <div class="wcards" data-key="${key}" data-n="${n}" data-copies="${copies}">${html.join('')}</div>
       ${dots}
     </section>`;
 }
@@ -685,6 +691,7 @@ function setupCarousel() {
   const n = Number(strip?.dataset.n);
   if (!strip || n < 2) return;
   const mid = Math.floor(Number(strip.dataset.copies) / 2);
+  const key = strip.dataset.key || 'home';
   const dots = [...app.querySelectorAll('.dots .dot')];
   const { step, base } = carouselGeometry(strip);
   const go = (i) => { strip.scrollLeft = base + i * step; };
@@ -692,7 +699,7 @@ function setupCarousel() {
   const wrap = (i) => ((i % n) + n) % n;
 
   strip.style.scrollSnapType = 'none';
-  go(mid * n + wrap(carouselIndex));
+  go(mid * n + wrap(carouselPos[key]));
   requestAnimationFrame(() => { strip.style.scrollSnapType = ''; });
 
   let timer = 0;
@@ -707,8 +714,8 @@ function setupCarousel() {
     requestAnimationFrame(() => { strip.style.scrollSnapType = ''; });
   };
   strip.addEventListener('scroll', () => {
-    carouselIndex = wrap(index());
-    dots.forEach((dot, k) => dot.classList.toggle('active', k === carouselIndex));
+    carouselPos[key] = wrap(index());
+    dots.forEach((dot, k) => dot.classList.toggle('active', k === carouselPos[key]));
     clearTimeout(timer);
     timer = setTimeout(settle, 140);
   }, { passive: true });
@@ -976,26 +983,45 @@ function renderWallets() {
   const { balances, baseBalances } = computed();
   const wallets = state.data.wallets || [];
   const worth = netWorth(baseBalances);
-  const lines = (w, f = nb) => `<span class="hero-lines"><span>Assets ${f(w.assets)}</span><span>Debts ${f(w.debts)}</span></span>`;
+  const style = (colour) => ({ colour, pattern: 'glass', finish: 'matte' }); // Glass Matte
+  const lines = (w, f) => `<span class="foot-line">Assets ${f(w.assets)}</span><span class="foot-line">Debts ${f(w.debts)}</span>`;
 
-  // Wallets in other currencies are not added to the net worth; each currency gets its own card
+  // Net worth cards, as a swipeable strip: the main one, then one per other currency
+  // (wallets in other currencies are not added to the main net worth)
+  const specs = [{
+    title: 'Net worth',
+    kicker: `${wallets.filter(isBase).length} wallet${wallets.filter(isBase).length === 1 ? '' : 's'}`,
+    caption: 'Net worth',
+    amountHtml: bigMoney(worth.net),
+    footHtml: lines(worth, (v) => esc(money(v))),
+    style: style('royal'),
+    tag: 'div',
+    label: `Net worth: ${money(worth.net)}`,
+    negative: worth.net < 0,
+  }];
   const others = new Map();
   for (const w of wallets.filter((x) => !isBase(x))) {
     const key = String(w.currency).toUpperCase();
     if (!others.has(key)) others.set(key, new Map());
     others.get(key).set(w.name, balances.get(w.name) || 0);
   }
-  const otherCards = [...others].map(([cur, map]) => {
+  const palette = ['emerald', 'violet', 'sunset', 'ocean', 'rose', 'graphite'];
+  [...others].forEach(([cur, map], k) => {
     const w = netWorth(map);
-    const f = (v) => `<span class="nowrap">${esc(formatMoney(v, { currency: cur, decimals: decimals() }))}</span>`;
-    return `
-      <section class="card worth-card">
-        <span class="overline">Net worth · ${esc(cur)}</span>
-        <p class="worth-amount ${w.net < 0 ? 'neg' : ''}">${bigMoney(w.net, cur)}</p>
-        ${lines(w, f)}
-        <span class="tile-sub">${[...map.keys()].map(esc).join(', ')}</span>
-      </section>`;
-  }).join('');
+    const f = (v) => esc(formatMoney(v, { currency: cur, decimals: decimals() }));
+    specs.push({
+      title: cur,
+      kicker: [...map.keys()].join(', '),
+      caption: `Net worth · ${cur}`,
+      amountHtml: bigMoney(w.net, cur),
+      footHtml: lines(w, f),
+      style: style(palette[k % palette.length]),
+      tag: 'div',
+      label: `Net worth in ${cur}: ${formatMoney(w.net, { currency: cur, decimals: decimals() })}`,
+      negative: w.net < 0,
+    });
+  });
+  const hero = carouselHtml('worth', specs, 'Net worth');
 
   const row = (w, balance) => `
         <li>
@@ -1027,12 +1053,7 @@ function renderWallets() {
     </ul>`).join('');
   }
   return `
-    <section class="hero-block">
-      <p class="overline">Net worth</p>
-      <p class="display ${worth.net < 0 ? 'neg' : ''}">${bigMoney(worth.net)}</p>
-      ${lines(worth)}
-    </section>
-    ${otherCards}
+    ${hero}
     <section class="gap-lg">
       ${list || '<p class="empty">No wallets yet. Add your first one below.</p>'}
     </section>

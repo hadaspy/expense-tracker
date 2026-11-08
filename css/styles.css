@@ -1330,3 +1330,7 @@ div.flow-stat { display: flex; flex-direction: row; gap: 10px; }
     scroll-behavior: auto !important;
   }
 }
+
+/* Assets / Debts lines inside cards: smaller than the label */
+.wcard-label .foot-line { font-size: 10.5px; letter-spacing: 0.04em; line-height: 1.35; font-weight: 500; }
+.wcard-label:has(.foot-line) { letter-spacing: 0; }
