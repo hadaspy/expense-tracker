@@ -16,6 +16,9 @@ const RULES = [
   ['traveloka', /traveloka/], ['airwallex', /airwallex/], ['nex', /\bnex\b/], ['superbank', /super ?bank/],
 ];
 
+// logos that are wide even as a tile: they get less padding so the lettering stays readable
+const WIDE_TILES = ['bca', 'mandiri', 'stockbit'];
+
 const TYPE_ICONS = {
   bank: 'bank', cash: 'coins', 'e-wallet': 'device-mobile', 'credit card': 'credit-card',
   savings: 'piggy-bank', investment: 'chart-line-up', stock: 'chart-line-up',
@@ -41,7 +44,7 @@ export function walletLogo(wallet, custom = '') {
   const src = logoSrc(wallet.name, custom);
   const key = custom ? '' : logoKey(wallet.name);
   const glyph = icon(TYPE_ICONS[String(wallet.type || '').toLowerCase()] || 'wallet');
-  return `<span class="wlogo ${src ? 'has-img' : ''} ${key === 'bca' ? 'wide' : ''}">${glyph}${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
+  return `<span class="wlogo ${src ? 'has-img' : ''} ${WIDE_TILES.includes(key) ? 'wide' : ''}">${glyph}${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
 }
 
 /**
@@ -57,7 +60,7 @@ export function cardBrand(name, custom = '') {
   const key = logoKey(name);
   if (!key) return { html: '', hideTitle: false };
   if (MONO[key]) {
-    const big = MONO[key] >= 3; // a wordmark that already says the name: shown larger, and the wallet name is left out
+    const big = MONO[key] >= 2.5; // a wordmark that already says the name: shown larger, and the wallet name is left out
     return {
       html: `<span class="wcard-brand ${big ? 'big' : ''}" role="img" aria-label="${esc(name)}" style="--ar:${MONO[key]};-webkit-mask-image:url(img/logos/mono/${key}.png);mask-image:url(img/logos/mono/${key}.png)"></span>`,
       hideTitle: big,

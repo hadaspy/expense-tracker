@@ -25,7 +25,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryColour, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '5.1.0';
+const APP_VERSION = '5.2.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -973,7 +973,7 @@ function budgetRings(plan, monthTxs) {
   return `<section class="brings" aria-label="Budgets">${items.join('')}</section>`;
 }
 
-function txRow(tx, { perspective = null, query = '' } = {}) {
+function txRow(tx, { perspective = null, query = '', hideSub = false } = {}) {
   const cls = amountClass(tx, perspective);
   const sign = cls === 'neg' ? '−' : cls === 'pos' ? '+' : '';
   // Three lines: category, wallet, note (small)
@@ -984,7 +984,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
     wallet = `${highlight(tx.wallet, query)} → ${highlight(tx.toWallet, query)}`;
   } else {
     iconHtml = categoryIcon(tx.category);
-    title = highlight(tx.category || 'Uncategorized', query) + (tx.subcategory ? ` <span class="tx-sub">› ${highlight(tx.subcategory, query)}</span>` : '');
+    title = highlight(tx.category || 'Uncategorized', query) + (tx.subcategory && !hideSub ? ` <span class="tx-sub">› ${highlight(tx.subcategory, query)}</span>` : '');
     wallet = highlight(tx.wallet, query);
   }
   const time = tx.when.toTimeString().slice(0, 5);
@@ -1008,7 +1008,7 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
 }
 
 /** Transactions grouped by day; each day shows what went out that day. */
-function txListByDay(txs, { perspective = null, limit = state.limit, showMore = true, query = '' } = {}) {
+function txListByDay(txs, { perspective = null, limit = state.limit, showMore = true, query = '', hideSub = false } = {}) {
   if (!txs.length) return '<p class="empty">No transactions found.</p>';
   const now = new Date();
   const shown = txs.slice(0, limit);
@@ -1023,7 +1023,7 @@ function txListByDay(txs, { perspective = null, limit = state.limit, showMore = 
     const out = day.txs.reduce((sum, t) => sum + (t.type === EXPENSE && baseNames.has(t.wallet) ? t.amount : 0), 0);
     return `
       <h3 class="day"><span>${esc(day.label)}</span>${out ? `<span class="day-total">−${listMoney(out)}</span>` : ''}</h3>
-      <ul class="card list">${day.txs.map((tx) => txRow(tx, { perspective, query })).join('')}</ul>`;
+      <ul class="card list">${day.txs.map((tx) => txRow(tx, { perspective, query, hideSub })).join('')}</ul>`;
   }).join('');
   if (showMore && txs.length > limit) {
     html += `<button class="btn-secondary" data-action="more">Show more (${txs.length - limit} left)</button>`;
@@ -1180,7 +1180,7 @@ function renderHome() {
     ${scheduled}
     <section class="gap-xl">
       ${sectionTitle('Recent', '<button class="link" data-action="open-view" data-view="transactions">See all</button>')}
-      ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
+      ${txs.length ? txListByDay(txs, { limit: 5, showMore: false, hideSub: true }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
     </section>`;
 }
 

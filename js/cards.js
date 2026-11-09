@@ -41,7 +41,7 @@ const TYPE_COLOURS = {
 
 /** "royal|waves|•••• 0329|visa" → {colour, pattern, label, scheme}, with type-based defaults. */
 export function parseCard(card, type = '') {
-  const [colour = '', pattern = '', label = '', scheme = '', valid = '', finish = '', logo = ''] = String(card || '').split('|');
+  const [colour = '', pattern = '', label = '', scheme = '', valid = '', finish = '', logo = '', hideName = ''] = String(card || '').split('|');
   const known = CARD_COLOURS.some(([id]) => id === colour);
   return {
     colour: known ? colour : TYPE_COLOURS[String(type).toLowerCase()] || 'midnight',
@@ -51,11 +51,12 @@ export function parseCard(card, type = '') {
     valid: /^(0[1-9]|1[0-2])\/\d{2}$/.test(valid) ? valid : '',
     finish: CARD_FINISHES.some(([id]) => id === finish) ? finish : 'grain',
     logo: /^[a-z0-9.-]{3,60}$/i.test(logo) ? logo.toLowerCase() : '',
+    hideName: hideName === '1',
   };
 }
 
-export const formatCard = ({ colour, pattern, label, scheme, valid, finish, logo }) =>
-  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || '', finish && finish !== 'grain' ? finish : '', logo || ''].join('|').replace(/\|+$/, '');
+export const formatCard = ({ colour, pattern, label, scheme, valid, finish, logo, hideName }) =>
+  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || '', finish && finish !== 'grain' ? finish : '', logo || '', hideName ? '1' : ''].join('|').replace(/\|+$/, '');
 
 const background = (colour) => (CARD_COLOURS.find(([id]) => id === colour) || CARD_COLOURS[1])[2];
 
@@ -86,7 +87,7 @@ export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', st
   const brand = wallet ? cardBrand(wallet, style.logo) : { html: '', hideTitle: false };
   return `
     <${tag} class="wcard pattern-${style.pattern} finish-${style.finish || 'grain'} ${isLight(style.colour) ? 'is-light' : ''} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
-      <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-right">${brand.hideTitle ? '' : `<span class="wcard-title">${esc(title)}</span>`}${brand.html}</span></span>
+      <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-right">${brand.hideTitle || style.hideName ? '' : `<span class="wcard-title">${esc(title)}</span>`}${brand.html}</span></span>
       ${CONTACTLESS}
       <span class="wcard-mid"><span class="wcard-caption">${esc(caption)}</span><span class="wcard-amount">${amountHtml}</span></span>
       <span class="wcard-foot"><span class="wcard-foot-left"><span class="wcard-label">${footHtml}</span>${style.valid ? `<span class="wcard-valid"><small><span>VALID</span><span>THRU</span></small><span>${esc(style.valid)}</span></span>` : ''}</span>${NETWORKS[style.scheme || '']}</span>
@@ -181,6 +182,10 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
           <span class="valid-slash">/</span>
           <select data-f="valid-year" aria-label="Valid thru year">${validYears(style.valid.slice(3)).map((y) => `<option ${y === style.valid.slice(3) ? 'selected' : ''}>${y}</option>`).join('')}</select>
         </div>` : ''}
+        <label class="switch-row">
+          <span><strong>Hide the wallet name</strong><span class="muted small">Takes the name off the top right of the card (a bank logo stays if there is one).</span></span>
+          <input type="checkbox" class="switch" data-f="hide-name" role="switch" ${style.hideName ? 'checked' : ''}>
+        </label>
         <label class="field">
           <span class="field-label">Logo website <span class="muted">(optional)</span></span>
           <input class="note-input" data-f="logo" maxlength="60" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Automatic from the name, or e.g. bca.co.id" value="${esc(style.logo || '')}">
@@ -206,7 +211,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
       if (act === 'scheme') style.scheme = v;
       if (act === 'pattern') style.pattern = v;
       if (act === 'finish') style.finish = v;
-      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '', valid: '', logo: '' });
+      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '', valid: '', logo: '', hideName: false });
       const scroll = sheet.querySelector('.sheet-body').scrollTop;
       render();
       sheet.querySelector('.sheet-body').scrollTop = scroll;
@@ -230,6 +235,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
   // Valid thru: switch on/off and the two selects
   backdrop.addEventListener('change', (event) => {
     const f = event.target.dataset.f;
+    if (f === 'hide-name') { style.hideName = event.target.checked; refreshPreview(); return; }
     if (!f || !f.startsWith('valid')) return;
     if (f === 'valid-on') {
       const now = new Date();

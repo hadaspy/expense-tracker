@@ -1,6 +1,9 @@
 // Generated from the files in img/logos (see logos.js): which logos have a one-colour version for the cards
 // (key → width / height) and which are solid squares that are shown in a white chip instead.
 export const MONO = {
+ "mandiri": 3.396,
+ "stockbit": 2.633,
+ "dbs": 3.429,
  "bca": 3.186,
  "nex": 0.975,
  "superbank": 6.316,
@@ -15,7 +18,6 @@ export const MONO = {
  "danamon": 1.0,
  "hsbc": 1.979,
  "kredivo": 0.927,
- "mandiri": 3.097,
  "ocbc": 1.0,
  "ovo": 0.99,
  "paypal": 0.844,
@@ -26,4 +28,4 @@ export const MONO = {
  "tokocrypto": 1.104,
  "traveloka": 1.25
 };
-export const CHIPS = ["ajaib", "bsi", "cimb", "dbs", "gopay", "indodax", "jago", "jenius", "maybank", "pluang", "shopeepay", "stockbit", "tokopedia", "wise"];
+export const CHIPS = ["ajaib", "bsi", "cimb", "gopay", "indodax", "jago", "jenius", "maybank", "pluang", "shopeepay", "tokopedia", "wise"];
