@@ -20,13 +20,14 @@ import { applyCategoryEdit } from './catedit.js';
 import { openNameSheet } from './categories.js';
 import { openNewBudgetSheet } from './newbudget.js';
 import { DEFAULT_PREFS, evaluate, unreadCount } from './notify.js';
+import { createOutbox } from './outbox.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, autoCategoryColour, autoCategoryIcon, categoryColour, categoryIcon, categoryStyle, esc, highlight, icon, reducedMotion, setCategoryStyles } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '5.3.0';
-const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
+const APP_VERSION = '5.4.0';
+const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', outbox: 'expense-tracker.outbox', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
 const TAB_TITLES = { home: 'Home', wallets: 'Wallets', budgets: 'Budgets', reports: 'Reports', more: 'More' };
@@ -136,16 +137,10 @@ function computed() {
 
 /** Runs one category change: on the sheet (the answer says what changed) or, in the sample data, locally. */
 async function runCategoryOp(op) {
-  let patch;
-  if (isDemo) {
-    patch = applyCategoryEdit(state.data, op);
-  } else if (op.op === 'addCategory') {
-    patch = { categories: (await apiPost({ action: 'addCategory', type: op.type, name: op.name })).categories };
-  } else {
-    const { ok, error, ...rest } = await apiPost({ action: 'editCategory', ...op });
-    patch = rest;
-  }
-  setData(patch);
+  // Worked out on the phone first (same rules as the script), so a mistake shows up in the sheet before it closes
+  const patch = applyCategoryEdit(state.data, op);
+  const body = op.op === 'addCategory' ? { action: 'addCategory', type: op.type, name: op.name } : { action: 'editCategory', ...op };
+  commit({ patch, body, label: "Couldn't save the category" });
 }
 
 function openCategorySheet(kind, category, sub) {
@@ -280,7 +275,7 @@ function setNotifyPref(name, value) {
   saveNotify();
   // The schedule for Telegram lives on the server, so the bot sends the same things while the app is closed
   if (!isDemo && ['reminder', 'reminderTime', 'daily', 'weekly', 'insightTime', 'telegram', 'entries'].includes(name)) {
-    apiPost({ action: 'setNotify', [name]: value }).catch((error) => toast(`Couldn't save for Telegram: ${error.message}`));
+    commit({ body: { action: 'setNotify', [name]: value }, label: "Couldn't save for Telegram", key: `notify:${name}` });
   }
   checkNotifications();
   const scroll = window.scrollY;
@@ -346,7 +341,7 @@ async function request(url, init = {}) {
   try {
     // No custom headers: GET and text/plain POST don't need a CORS preflight (Apps Script can't answer one)
     const response = await fetch(url, { ...init, signal: controller.signal });
-    if (!response.ok) throw new Error(`The server answered with HTTP ${response.status}.`);
+    if (!response.ok) throw Object.assign(new Error(`The server answered with HTTP ${response.status}.`), { retry: response.status >= 500 || response.status === 429 });
     let json;
     try {
       json = await response.json();
@@ -356,8 +351,8 @@ async function request(url, init = {}) {
     if (!json.ok) throw new Error(json.error || 'Unknown error from the API.');
     return json;
   } catch (error) {
-    if (error.name === 'AbortError') throw new Error('The server took too long to respond. Try again.');
-    if (error instanceof TypeError) throw new Error('Could not reach the server. Check your internet connection.');
+    if (error.name === 'AbortError') throw Object.assign(new Error('The server took too long to respond. Try again.'), { retry: true });
+    if (error instanceof TypeError) throw Object.assign(new Error('Could not reach the server. Check your internet connection.'), { retry: true });
     throw error;
   } finally {
     clearTimeout(timer);
@@ -371,29 +366,82 @@ const apiGet = (action, url = settings.url, key = settings.key) =>
 const apiPost = (body) =>
   request(settings.url, { method: 'POST', body: JSON.stringify({ ...body, key: settings.key }) });
 
+// ---------- syncing with Google ----------
+// Saving: the change shows straight away (commit) and goes to Google in the background, in order (outbox).
+// Loading: the app sends the version it already has; when nothing changed Google answers "unchanged" in a moment.
+
+let edits = 0;          // local changes made so far; a download that started before one of them is out of date
+let needRefresh = false;
+
+const outbox = createOutbox({
+  send: (body) => apiPost(body),
+  load: () => (isDemo ? [] : storage.get(KEYS.outbox)),
+  save: (items) => { if (!isDemo) storage.set(KEYS.outbox, items); },
+  onStatus: () => { if (app.querySelector('.topbar')) renderHeader(); },
+  onIdle: (sent) => { if (sent || needRefresh) { needRefresh = false; refresh(); } },
+  onError: (item, error) => { needRefresh = true; toast(`${item.label || 'Not saved'}: ${error.message}`); },
+});
+const syncing = () => state.loading || outbox.pending() > 0;
+
+/**
+ * Shows a change at once and sends it to Google in the background. If Google refuses it, the change is undone
+ * (straight away when nothing else changed since, otherwise by reloading once the rest has been sent) with a message.
+ */
+function commit({ patch = null, body = null, label = '', key = '', onDone, onFail }) {
+  if (patch) {
+    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, state.data[k]]));
+    setData(patch);
+    edits++;
+    var undo = (left) => { if (!left) setData(before); };
+  }
+  if (isDemo || !body) return;
+  outbox.push(body, {
+    label, key, onDone,
+    onFail: (error, left) => {
+      needRefresh = true;
+      if (onFail) onFail(error, left); else undo?.(left);
+      toast(`${label ? `${label}: ` : ''}${error.message}`);
+    },
+  });
+  if (outbox.offline() && !offlineNoted) { offlineNoted = true; toast('Saved on this phone. It goes to Google when you are back online.'); }
+}
+let offlineNoted = false;
+
 async function refresh() {
   if (isDemo || state.loading || !settings.url || !settings.key) return;
+  if (outbox.pending()) { needRefresh = true; outbox.run(); return; } // send what's waiting first; this runs again after
   state.loading = true;
   state.error = null;
   renderHeader();
+  const startedAt = edits;
   try {
-    const data = await apiGet('data');
-    const cycleChanged = JSON.stringify(data.settings) !== JSON.stringify(state.data?.settings);
-    state.data = data;
-    syncCycle();
-    if (cycleChanged) state.month = periodOf(new Date());
-    state.fetchedAt = Date.now();
-    storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
-    if (data.notify) { // the server's choices (shared with the Telegram bot) win
-      notifyStore = { items: [], ...(notifyStore || {}), prefs: { ...notifyPrefs(), ...data.notify } };
-      if (!notifyStore.seen) delete notifyStore.seen;
-      saveNotify();
+    const since = state.data?.version ? `&since=${encodeURIComponent(state.data.version)}` : '';
+    const data = await apiGet(`data${since}`);
+    if (edits !== startedAt || outbox.pending()) {
+      needRefresh = true; // something changed on this phone meanwhile: this copy is already out of date
+    } else if (data.unchanged) {
+      state.fetchedAt = Date.now();
+      storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
+    } else {
+      delete data.ok;
+      const cycleChanged = JSON.stringify(data.settings) !== JSON.stringify(state.data?.settings);
+      state.data = data;
+      syncCycle();
+      if (cycleChanged) state.month = periodOf(new Date());
+      state.fetchedAt = Date.now();
+      storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
+      if (data.notify) { // the server's choices (shared with the Telegram bot) win
+        notifyStore = { items: [], ...(notifyStore || {}), prefs: { ...notifyPrefs(), ...data.notify } };
+        if (!notifyStore.seen) delete notifyStore.seen;
+        saveNotify();
+      }
     }
   } catch (error) {
     state.error = error.message;
   } finally {
     state.loading = false;
     render();
+    if (needRefresh && !outbox.pending()) { needRefresh = false; setTimeout(refresh, 300); }
   }
 }
 
@@ -414,43 +462,38 @@ const applyLocal = (change) => setData({ transactions: change([...(state.data.tr
  * A new entry has a temporary negative ID until Google answers with the real one.
  */
 async function saveTransaction(transaction, id = null) {
+  const list = () => [...(state.data.transactions || [])];
   if (id) {
-    const previous = (state.data.transactions || []).find((t) => t.id === id);
-    applyLocal((list) => list.map((t) => (t.id === id ? { id, ...transaction } : t)));
+    commit({
+      patch: { transactions: list().map((t) => (t.id === id ? { id, ...transaction } : t)) },
+      body: { action: 'update', id, transaction },
+      label: `Couldn't update #${id}`,
+    });
     toast(`Updated #${id}`);
-    if (!isDemo) {
-      apiPost({ action: 'update', id, transaction }).catch((error) => {
-        if (previous) applyLocal((list) => list.map((t) => (t.id === id ? previous : t)));
-        toast(`Couldn't update: ${error.message}`);
-      });
-    }
     return;
   }
-  const temp = isDemo ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1 : -Date.now();
+  const temp = isDemo ? Math.max(0, ...list().map((t) => t.id)) + 1 : -Date.now();
   if (isDemo) markSeen(temp); // before it shows up, so it isn't reported as added outside the app
-  applyLocal((list) => [...list, { id: temp, ...transaction }]);
-  if (isDemo) { toast(`Saved #${temp}`); return; }
-  toast('Saving…');
-  apiPost({ action: 'add', transaction, source: 'app' }).then((result) => {
-    markSeen(result.id);
-    applyLocal((list) => list.map((t) => (t.id === temp ? { ...t, id: result.id } : t)));
-    toast(`Saved #${result.id}`);
-  }).catch((error) => {
-    applyLocal((list) => list.filter((t) => t.id !== temp));
-    toast(`Not saved: ${error.message}`);
+  commit({
+    patch: { transactions: [...list(), { id: temp, ...transaction }] },
+    body: { action: 'add', transaction, source: 'app' },
+    label: 'Not saved',
+    onDone: (result) => {
+      markSeen(result.id);
+      applyLocal((txs) => txs.map((t) => (t.id === temp ? { ...t, id: result.id } : t)));
+    },
+    onFail: () => applyLocal((txs) => txs.filter((t) => t.id !== temp)),
   });
+  toast(isDemo ? `Saved #${temp}` : 'Saved');
 }
 
 async function deleteTransaction(id) {
-  const previous = (state.data.transactions || []).find((t) => t.id === id);
-  applyLocal((list) => list.filter((t) => t.id !== id));
+  commit({
+    patch: { transactions: (state.data.transactions || []).filter((t) => t.id !== id) },
+    body: { action: 'delete', id },
+    label: `Couldn't delete #${id}`,
+  });
   toast(`Deleted #${id}`);
-  if (!isDemo) {
-    apiPost({ action: 'delete', id }).catch((error) => {
-      if (previous) applyLocal((list) => [...list, previous]);
-      toast(`Couldn't delete: ${error.message}`);
-    });
-  }
 }
 
 function openEntry(id = null) {
@@ -470,8 +513,8 @@ function openEntry(id = null) {
 }
 
 async function saveBudgets(budgets) {
-  const saved = isDemo ? budgets : (await apiPost({ action: 'setBudgets', budgets })).budgets;
-  setData({ budgets: saved });
+  const clean = Object.fromEntries(Object.entries(budgets).filter(([, v]) => Number(v) > 0).map(([k, v]) => [k, Number(v)]));
+  commit({ patch: { budgets: clean }, body: { action: 'setBudgets', budgets: clean }, label: "Couldn't save the budgets" });
   toast('Budgets saved');
 }
 
@@ -502,23 +545,15 @@ async function saveGoal(goal, original) {
   if ((state.data.goals || []).some((g) => same(g.name, clean.name) && !(original && same(g.name, original)))) {
     throw new Error(`A goal called “${clean.name}” already exists.`);
   }
-  let goals;
-  if (isDemo) {
-    goals = [...(state.data.goals || [])];
-    const at = goals.findIndex((g) => g.name === (original || clean.name));
-    if (at === -1) goals.push(clean); else goals[at] = clean;
-  } else {
-    goals = (await apiPost({ action: 'setGoal', goal: clean, original })).goals;
-  }
-  setData({ goals });
+  const goals = [...(state.data.goals || [])];
+  const at = goals.findIndex((g) => g.name === (original || clean.name));
+  if (at === -1) goals.push(clean); else goals[at] = clean;
+  commit({ patch: { goals }, body: { action: 'setGoal', goal: clean, original }, label: "Couldn't save the goal" });
   toast(original ? 'Goal updated' : 'Goal created');
 }
 
 async function deleteGoal(name) {
-  const goals = isDemo
-    ? (state.data.goals || []).filter((g) => g.name !== name)
-    : (await apiPost({ action: 'deleteGoal', name })).goals;
-  setData({ goals });
+  commit({ patch: { goals: (state.data.goals || []).filter((g) => g.name !== name) }, body: { action: 'deleteGoal', name }, label: "Couldn't delete the goal" });
   toast('Goal deleted');
 }
 
@@ -531,25 +566,31 @@ async function saveBalance(name, balance) {
   const difference = Math.round((balance - current) * 100) / 100;
   if (difference === 0) return;
   const date = formatDateTime(new Date());
-  if (isDemo) {
-    const entry = {
-      id: Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1, date,
-      type: difference > 0 ? INCOME : EXPENSE, amount: Math.abs(difference), wallet: name, toWallet: '',
-      category: ADJUST_CATEGORY, subcategory: '', note: ADJUST_CATEGORY,
-    };
-    markSeen(entry.id);
-    applyLocal((list) => [...list, entry]);
-  } else {
-    const { transaction } = await apiPost({ action: 'setBalance', wallet: name, balance, date });
-    if (transaction) markSeen(transaction.id);
-    if (transaction) applyLocal((list) => [...list, transaction]);
-  }
+  const temp = isDemo ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1 : -Date.now();
+  if (isDemo) markSeen(temp);
+  const entry = {
+    id: temp, date, type: difference > 0 ? INCOME : EXPENSE, amount: Math.abs(difference), wallet: name, toWallet: '',
+    category: ADJUST_CATEGORY, subcategory: '', note: ADJUST_CATEGORY,
+  };
+  commit({
+    patch: { transactions: [...(state.data.transactions || []), entry] },
+    body: { action: 'setBalance', wallet: name, balance, date },
+    label: `Couldn't adjust ${name}`,
+    onDone: (result) => {
+      if (result.transaction) markSeen(result.transaction.id);
+      applyLocal((txs) => (result.transaction ? txs.map((t) => (t.id === temp ? result.transaction : t)) : txs.filter((t) => t.id !== temp)));
+    },
+    onFail: () => applyLocal((txs) => txs.filter((t) => t.id !== temp)),
+  });
   toast(`${name} balance updated`);
 }
 
 async function saveCard(name, card) {
-  if (!isDemo) await apiPost({ action: 'setWalletCard', wallet: name, card });
-  setData({ wallets: state.data.wallets.map((w) => (w.name === name ? { ...w, card } : w)) });
+  commit({
+    patch: { wallets: state.data.wallets.map((w) => (w.name === name ? { ...w, card } : w)) },
+    body: { action: 'setWalletCard', wallet: name, card },
+    label: "Couldn't save the card",
+  });
   toast('Card saved');
 }
 
@@ -569,9 +610,8 @@ function openBalance(name) {
 // ---------- wallets: add / remove ----------
 
 async function addWallet(wallet) {
-  const clean = { ...wallet, card: '' };
-  const wallets = isDemo ? [...(state.data.wallets || []), clean] : (await apiPost({ action: 'addWallet', wallet })).wallets;
-  setData({ wallets });
+  const clean = { name: wallet.name, openingBalance: Number(wallet.openingBalance) || 0, type: wallet.type || 'Other', card: '', currency: wallet.currency || '' };
+  commit({ patch: { wallets: [...(state.data.wallets || []), clean] }, body: { action: 'addWallet', wallet }, label: `Couldn't add ${wallet.name}` });
   toast(`${wallet.name} added`);
 }
 
@@ -592,56 +632,40 @@ async function removeWallet(name) {
     ? `Remove “${name}”?\n\nThis also deletes its ${parts.join(' and ')}. A transfer to or from another wallet disappears from that wallet too, so its balance changes. ${goals.length ? `Goals that follow it keep today's balance as their saved amount. ` : ''}This can't be undone.`
     : `Remove the wallet “${name}”?${goals.length ? ' Goals that follow it keep its balance as their saved amount.' : ''}`;
   if (!confirm(warning)) return;
-  try {
-    let patch;
-    if (isDemo) {
-      const balance = computed().balances.get(name) || 0;
-      patch = {
-        wallets: state.data.wallets.filter((w) => w.name !== name),
-        transactions: (state.data.transactions || []).filter((t) => t.wallet !== name && t.toWallet !== name),
-        recurring: recurringItems().filter((r) => r.wallet !== name && r.toWallet !== name),
-        goals: (state.data.goals || []).map((g) => (g.wallet === name ? { ...g, wallet: '', saved: Math.max(0, balance) } : g)),
-      };
-    } else {
-      patch = { wallets: (await apiPost({ action: 'deleteWallet', name, force: true })).wallets };
-    }
-    state.view = null;
-    history.back();
-    setData(patch);
-    toast(`${name} removed`);
-    if (!isDemo) refresh(); // pick up the deleted transactions, recurring items and goal changes
-  } catch (error) {
-    alert(error.message);
-  }
+  const balance = computed().balances.get(name) || 0;
+  state.view = null;
+  history.back();
+  commit({
+    patch: {
+      wallets: state.data.wallets.filter((w) => w.name !== name),
+      transactions: (state.data.transactions || []).filter((t) => t.wallet !== name && t.toWallet !== name),
+      recurring: recurringItems().filter((r) => r.wallet !== name && r.toWallet !== name),
+      goals: (state.data.goals || []).map((g) => (g.wallet === name ? { ...g, wallet: '', saved: Math.max(0, balance) } : g)),
+    },
+    body: { action: 'deleteWallet', name, force: true },
+    label: `Couldn't remove ${name}`,
+  });
+  toast(`${name} removed`);
 }
 
 async function saveWalletEdit(oldName, { name, type, currency: walletCur, renameType = false }) {
-  let patch;
   const oldType = (state.data.wallets || []).find((w) => w.name === oldName)?.type;
   const retype = (w) => (w.name === oldName ? { ...w, name, type, currency: walletCur } : renameType && w.type === oldType ? { ...w, type } : w);
-  if (isDemo) {
-    const swap = (v) => (v === oldName ? name : v);
-    patch = {
-      wallets: state.data.wallets.map(retype),
-      transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
-      recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
-      goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
-    };
-  } else {
-    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type, currency: walletCur, renameType })).wallets;
-    const swap = (v) => (v === oldName ? name : v);
-    patch = {
-      wallets,
-      transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
-      recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
-      goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
-    };
-  }
+  const swap = (v) => (v === oldName ? name : v);
   if (state.view?.wallet === oldName) {
     state.view = { wallet: name };
     history.replaceState({ view: state.view }, '');
   }
-  setData(patch);
+  commit({
+    patch: {
+      wallets: state.data.wallets.map(retype),
+      transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
+      recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
+      goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
+    },
+    body: { action: 'updateWallet', name: oldName, newName: name, type, currency: walletCur, renameType },
+    label: `Couldn't update ${oldName}`,
+  });
   toast('Wallet updated');
 }
 
@@ -655,7 +679,6 @@ function openEditWallet(name) {
   });
 }
 
-let orderQueue = Promise.resolve();
 /** Moves a wallet up or down; the order (= the order of the cards on Home) is saved in the sheet in the background. */
 function moveWallet(name, direction) {
   const wallets = [...(state.data.wallets || [])];
@@ -663,26 +686,19 @@ function moveWallet(name, direction) {
   const j = i + direction;
   if (i < 0 || j < 0 || j >= wallets.length) return;
   [wallets[i], wallets[j]] = [wallets[j], wallets[i]];
-  setData({ wallets });
-  if (isDemo) return;
-  const names = wallets.map((w) => w.name);
-  orderQueue = orderQueue
-    .then(() => apiPost({ action: 'setWalletOrder', names }))
-    .catch((error) => toast(`Couldn't save the order: ${error.message}`));
+  // Only the latest order needs to reach Google, so a newer move replaces one that hasn't been sent yet
+  commit({ patch: { wallets }, body: { action: 'setWalletOrder', names: wallets.map((w) => w.name) }, label: "Couldn't save the order", key: 'walletOrder' });
 }
 
 // ---------- new budget ----------
 
 async function saveNewBudget({ category, limit, isNew }) {
-  let categories = state.data.categories;
-  if (isNew) {
-    categories = isDemo
-      ? { ...categories, Expense: { ...categories.Expense, [category]: [] } }
-      : (await apiPost({ action: 'addCategory', type: 'Expense', name: category })).categories;
-  }
-  const merged = { ...(state.data.budgets || {}), [category]: limit };
-  const budgets = isDemo ? merged : (await apiPost({ action: 'setBudgets', budgets: merged })).budgets;
-  setData({ categories, budgets });
+  const categories = isNew
+    ? { ...state.data.categories, Expense: { ...state.data.categories.Expense, [category]: [] } }
+    : state.data.categories;
+  const budgets = { ...(state.data.budgets || {}), [category]: limit };
+  if (isNew) commit({ body: { action: 'addCategory', type: 'Expense', name: category }, label: `Couldn't add ${category}` });
+  commit({ patch: { categories, budgets }, body: { action: 'setBudgets', budgets }, label: `Couldn't save the budget for ${category}` });
   toast(`Budget for ${category} added`);
 }
 
@@ -701,29 +717,27 @@ function openNewBudget() {
 const recurringItems = () => state.data?.recurring || [];
 
 async function saveRecurring(transaction, id = null) {
+  if (id && id < 0) { toast('Still saving, one moment…'); return; }
   const item = { ...transaction, id: id || undefined, active: transaction.active !== false };
   delete item.date;
-  let recurring;
-  let created = 0;
-  if (isDemo) {
-    const list = [...recurringItems()];
-    const at = list.findIndex((r) => r.id === id);
-    const full = { ...item, day: Number(item.nextDate.slice(8, 10)), id: id || Math.max(0, ...list.map((r) => r.id)) + 1 };
-    if (at === -1) list.push(full); else list[at] = full;
-    recurring = list;
-  } else {
-    const result = await apiPost({ action: 'setRecurring', item });
-    recurring = result.recurring;
-    created = result.created;
-  }
-  setData({ recurring });
-  toast(created ? `Saved · ${created} added to your transactions` : 'Recurring saved');
-  if (created) refresh();
+  const list = [...recurringItems()];
+  const temp = isDemo ? Math.max(0, ...list.map((r) => r.id)) + 1 : -Date.now();
+  const full = { ...item, day: Number(item.nextDate.slice(8, 10)), id: id || temp };
+  const at = list.findIndex((r) => r.id === id);
+  if (at === -1) list.push(full); else list[at] = full;
+  commit({
+    patch: { recurring: list },
+    body: { action: 'setRecurring', item },
+    label: "Couldn't save the recurring item",
+    // Google may also have added catch-up entries; the reload after sending picks them up
+    onDone: (result) => { if (!outbox.pending()) setData({ recurring: result.recurring }); if (result.created) toast(`${result.created} added to your transactions`); },
+  });
+  toast('Recurring saved');
 }
 
 async function deleteRecurring(id) {
-  const recurring = isDemo ? recurringItems().filter((r) => r.id !== id) : (await apiPost({ action: 'deleteRecurring', id })).recurring;
-  setData({ recurring });
+  if (id < 0) { toast('Still saving, one moment…'); return; }
+  commit({ patch: { recurring: recurringItems().filter((r) => r.id !== id) }, body: { action: 'deleteRecurring', id }, label: "Couldn't delete the recurring item" });
   toast('Recurring item deleted');
 }
 
@@ -753,8 +767,8 @@ function openRecurring(id = null) {
 // ---------- pay cycle ----------
 
 async function saveCycle(values) {
-  const saved = isDemo ? values : (await apiPost({ action: 'setSettings', ...values })).settings;
-  setData({ settings: saved });
+  const clean = { payday: Number(values.payday) || 1, paydayWeekdays: !!values.paydayWeekdays };
+  commit({ patch: { settings: clean }, body: { action: 'setSettings', ...clean }, label: "Couldn't save the pay cycle" });
   toast('Pay cycle saved');
 }
 
@@ -1778,6 +1792,7 @@ function titleHtml() {
 
 function statusText() {
   if (isDemo) return 'Sample data';
+  if (outbox.pending()) return outbox.offline() ? `${outbox.pending()} change${outbox.pending() === 1 ? '' : 's'} waiting for a connection` : 'Saving…';
   if (state.loading) return 'Updating…';
   if (state.error) return 'Not updated';
   if (state.fetchedAt) return `Updated ${timeAgo(state.fetchedAt)}`;
@@ -1786,9 +1801,9 @@ function statusText() {
 
 /** A check mark next to the title: blue when your data is up to date, grey when it isn't (updating, offline, error). */
 function syncMark() {
-  const ok = isDemo || (!!state.fetchedAt && !state.error && !state.loading);
+  const ok = isDemo || (!!state.fetchedAt && !state.error && !syncing());
   const label = statusText();
-  return `<span class="sync ${ok ? 'ok' : ''} ${state.loading ? 'busy' : ''}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${ICONS.check}</span>`;
+  return `<span class="sync ${ok ? 'ok' : ''} ${syncing() ? 'busy' : ''}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${ICONS.check}</span>`;
 }
 
 /** What the ⋯ menu at the top right offers on the current screen (none → no button). */
@@ -1831,7 +1846,7 @@ function headerHtml() {
       <div class="titles">
         <h1>${titleHtml()}${syncMark()}</h1>
       </div>
-      <span class="hdr-loader ${state.loading ? 'on' : ''}" aria-hidden="true">${ICONS.refresh}</span>
+      <span class="hdr-loader ${syncing() ? 'on' : ''}" aria-hidden="true">${ICONS.refresh}</span>
       ${bellHtml()}
       ${items.length ? `<button class="icon-btn menu-btn ${state.menu ? 'open' : ''}" data-action="toggle-menu" aria-label="More options" aria-expanded="${state.menu}">${ICONS.more}</button>` : ''}
     </div>
@@ -2317,10 +2332,12 @@ window.addEventListener('touchcancel', () => { endPull(); edge = null; }, { pass
 
 // Refresh when coming back to the app after a while
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && (!state.fetchedAt || Date.now() - state.fetchedAt > REFRESH_AFTER_MS)) {
-    refresh();
-  }
+  if (document.visibilityState !== 'visible') return;
+  if (outbox.pending()) outbox.run(); // changes still waiting from before
+  else if (!state.fetchedAt || Date.now() - state.fetchedAt > REFRESH_AFTER_MS) refresh();
 });
+// Back online: send whatever was saved on the phone meanwhile
+window.addEventListener('online', () => outbox.run());
 
 // Keep "Updated x min ago" current
 setInterval(() => { if (!state.loading) renderHeader(); }, 30000);
