@@ -1334,3 +1334,29 @@ div.flow-stat { display: flex; flex-direction: row; gap: 10px; }
 /* Assets / Debts lines inside cards: smaller than the label */
 .wcard-label .foot-line { font-size: 10.5px; letter-spacing: 0.04em; line-height: 1.35; font-weight: 500; }
 .wcard-label:has(.foot-line) { letter-spacing: 0; }
+
+/* ---------- notifications ---------- */
+.bell-btn { position: relative; align-self: center; }
+.bell-btn .ico { width: 21px; height: 21px; }
+.bell-btn.open { background: var(--accent-soft) !important; color: var(--accent-text); }
+.bell-badge { position: absolute; top: 1px; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--neg); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center; box-shadow: 0 0 0 2px var(--bg, #fff); }
+.notifs { margin-top: 12px; }
+.notif { border-bottom: 1px solid var(--edge); }
+.notif:last-child { border-bottom: 0; }
+.notif.fresh { background: var(--accent-soft); }
+.notif-main { display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 14px 16px; text-align: left; color: inherit; }
+button.notif-main:active { opacity: 0.7; }
+.notif-ico { flex-shrink: 0; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--accent-soft); color: var(--accent-text); }
+.notif-ico .ico { width: 21px; height: 21px; }
+.notif-ico.reminder { background: rgba(240, 160, 40, 0.16); color: #c27a10; }
+.notif-ico.activity { background: rgba(25, 150, 100, 0.14); color: var(--pos); }
+.notif-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.notif-title { font-weight: 600; font-size: 15px; }
+.notif-body { font-size: 13.5px; line-height: 1.4; color: var(--text-2, var(--muted)); overflow-wrap: anywhere; }
+.notify-settings { padding: 4px 16px 16px; }
+.notify-settings .switch-row { margin-top: 12px; background: transparent; box-shadow: none; padding: 8px 0; }
+.notify-settings .switch-row > span { gap: 4px; }
+.notify-time { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.notify-time input { padding: 6px 10px; border-radius: 10px; background: var(--input); box-shadow: inset 0 0 0 1px var(--edge); font: inherit; color: inherit; }
+.notify-foot { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--edge); }
+.btn-secondary + .group-title { margin-top: 24px; }

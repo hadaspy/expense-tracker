@@ -16,17 +16,18 @@ import { openEntrySheet } from './entry.js';
 import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
 import { openNewBudgetSheet } from './newbudget.js';
+import { DEFAULT_PREFS, evaluate, unreadCount } from './notify.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '4.8.0';
-const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', name: 'expense-tracker.name' };
+const APP_VERSION = '4.9.0';
+const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
 const TAB_TITLES = { home: 'Home', wallets: 'Wallets', budgets: 'Budgets', reports: 'Reports', more: 'More' };
-const VIEW_TITLES = { settings: 'Settings', transactions: 'Transactions', recurring: 'Recurring' };
+const VIEW_TITLES = { settings: 'Settings', transactions: 'Transactions', recurring: 'Recurring', notifications: 'Notifications' };
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 
@@ -65,6 +66,7 @@ const state = {
   error: null,
   reorder: false,             // Wallets tab: reordering mode
   menu: false,                // the ⋯ menu at the top right is open
+  fresh: new Set(),           // notifications that were unread when the list was opened (they stay highlighted)
   animate: true,              // play the entrance animation on the next render (navigation only)
 };
 
@@ -124,6 +126,110 @@ function computed() {
     };
   }
   return memo;
+}
+
+// ---------- notifications (see notify.js) ----------
+
+let notifyStore = isDemo ? null : storage.get(KEYS.notify); // {items, seen, prefs}; sample data keeps them in memory only
+let notifyKey = '';
+
+const notifyPrefs = () => ({ ...DEFAULT_PREFS, ...(notifyStore?.prefs || {}) });
+const saveNotify = () => { if (!isDemo) storage.set(KEYS.notify, notifyStore); };
+
+function describeEntry(tx) {
+  if (tx.type === TRANSFER) return `Transfer ${moneyFor(tx.wallet, tx.amount)} · ${tx.wallet} → ${tx.toWallet}`;
+  const category = tx.subcategory ? `${tx.category} › ${tx.subcategory}` : tx.category;
+  return `${tx.type === EXPENSE ? '−' : '+'}${moneyFor(tx.wallet, tx.amount)} · ${category} · ${tx.wallet}${tx.note ? ` · ${tx.note}` : ''}`;
+}
+
+/** Works out new notifications (cheap; at most once a minute unless the data changed). */
+function checkNotifications() {
+  if (!state.data) return;
+  const key = `${Math.floor(Date.now() / 60000)}|${(state.data.transactions || []).length}|${(state.data.transactions || []).reduce((m, t) => Math.max(m, t.id), 0)}|${JSON.stringify(notifyPrefs())}`;
+  if (key === notifyKey) return;
+  notifyKey = key;
+  const { txs, baseTxs } = computed();
+  const result = evaluate(notifyStore, { txs, baseTxs, now: new Date(), fmt: (v) => money(v), describe: describeEntry });
+  notifyStore = result.store;
+  if (result.changed) saveNotify();
+}
+
+/** An entry made in this app is not news: remember its ID so it doesn't show up as "added outside the app". */
+function markSeen(id) {
+  if (!(id > 0)) return;
+  const seen = new Set(notifyStore?.seen || []);
+  seen.add(id);
+  notifyStore = { items: [], prefs: {}, ...(notifyStore || {}), seen: [...seen].sort((a, b) => a - b).slice(-1000) };
+  saveNotify();
+}
+
+function openNotifications() {
+  if (state.view === 'notifications') { window.scrollTo(0, 0); return; } // already here: don't stack another history entry
+  checkNotifications();
+  state.fresh = new Set((notifyStore?.items || []).filter((i) => !i.read).map((i) => i.id));
+  if (state.fresh.size) {
+    notifyStore = { ...notifyStore, items: notifyStore.items.map((i) => ({ ...i, read: true })) };
+    saveNotify();
+  }
+  openView('notifications');
+}
+
+function setNotifyPref(name, value) {
+  notifyStore = { items: [], seen: undefined, ...(notifyStore || {}), prefs: { ...notifyPrefs(), [name]: value } };
+  if (!notifyStore.seen) delete notifyStore.seen;
+  saveNotify();
+  checkNotifications();
+  const scroll = window.scrollY;
+  render();
+  window.scrollTo(0, scroll);
+}
+
+const NOTIFY_ICONS = { reminder: 'bell-ringing', daily: 'chart-bar', weekly: 'calendar-check', activity: 'plus-circle' };
+
+function renderNotifications() {
+  const items = notifyStore?.items || [];
+  const prefs = notifyPrefs();
+  const row = (name, title, sub, extra = '') => `
+    <label class="switch-row">
+      <span><strong>${title}</strong><span class="muted small">${sub}</span>${extra}</span>
+      <input type="checkbox" class="switch" data-notify="${name}" role="switch" ${prefs[name] ? 'checked' : ''}>
+    </label>`;
+  const time = (name, label) => `<span class="notify-time"><span class="muted small">${label}</span><input type="time" data-notify-time="${name}" value="${esc(prefs[name])}" aria-label="${label}"></span>`;
+  const list = items.length ? `
+    <ul class="card list notifs">
+      ${items.map((n) => {
+        const tag = n.txId ? `button class="notif-main" data-action="open-entry" data-id="${n.txId}"` : 'div class="notif-main"';
+        const tagName = n.txId ? 'button' : 'div';
+        return `
+        <li class="notif ${state.fresh.has(n.id) ? 'fresh' : ''}">
+          <${tag}>
+            <span class="notif-ico ${n.kind}">${icon(NOTIFY_ICONS[n.kind] || 'bell')}</span>
+            <span class="notif-text">
+              <span class="notif-title">${esc(n.title)}</span>
+              <span class="notif-body">${esc(n.body)}</span>
+              <span class="notif-time muted small">${esc(timeAgo(n.at))}</span>
+            </span>
+          </${tagName}>
+        </li>`;
+      }).join('')}
+    </ul>
+    <button class="btn-secondary" data-action="clear-notifications">Clear all</button>` : `
+    <section class="card empty-card">
+      <p class="empty-icon">${icon('bell')}</p>
+      <h2>You're all caught up</h2>
+      <p class="muted">Reminders, daily and weekly insights, and entries added outside the app will show up here.</p>
+    </section>`;
+  return `
+    ${list}
+    <h3 class="group-title"><span>Notify me about</span></h3>
+    <section class="card notify-settings">
+      ${row('reminder', 'Reminder to add entries', 'If nothing is logged for today by the time you choose.', time('reminderTime', 'Remind me at'))}
+      ${row('daily', 'Daily insight', 'Yesterday\'s total expense, your biggest category and how it compares with a usual day.')}
+      ${row('weekly', 'Weekly insight', 'Last week\'s spending, the change from the week before, your top category and income.')}
+      ${row('activity', 'Entries added outside the app', 'A note for entries made from a Shortcut, Telegram or the sheet.')}
+      <div class="notify-foot">${time('insightTime', 'Insights appear from')}</div>
+    </section>
+    <p class="hint small">Notifications are worked out when you open the app or come back to it, and kept on this device. An iPhone web app can't wake itself up in the background, so nothing arrives while it is closed.</p>`;
 }
 
 // ---------- API ----------
@@ -210,10 +316,12 @@ async function saveTransaction(transaction, id = null) {
     return;
   }
   const temp = isDemo ? Math.max(0, ...(state.data.transactions || []).map((t) => t.id)) + 1 : -Date.now();
+  if (isDemo) markSeen(temp); // before it shows up, so it isn't reported as added outside the app
   applyLocal((list) => [...list, { id: temp, ...transaction }]);
   if (isDemo) { toast(`Saved #${temp}`); return; }
   toast('Saving…');
   apiPost({ action: 'add', transaction }).then((result) => {
+    markSeen(result.id);
     applyLocal((list) => list.map((t) => (t.id === temp ? { ...t, id: result.id } : t)));
     toast(`Saved #${result.id}`);
   }).catch((error) => {
@@ -318,9 +426,11 @@ async function saveBalance(name, balance) {
       type: difference > 0 ? INCOME : EXPENSE, amount: Math.abs(difference), wallet: name, toWallet: '',
       category: ADJUST_CATEGORY, subcategory: '', note: ADJUST_CATEGORY,
     };
+    markSeen(entry.id);
     applyLocal((list) => [...list, entry]);
   } else {
     const { transaction } = await apiPost({ action: 'setBalance', wallet: name, balance, date });
+    if (transaction) markSeen(transaction.id);
     if (transaction) applyLocal((list) => [...list, transaction]);
   }
   toast(`${name} balance updated`);
@@ -1068,6 +1178,7 @@ function renderMore() {
     ['open-view', 'transactions', ICONS.transactions, 'Transactions', 'Search, filter and export'],
     ['open-view', 'recurring', ICONS.repeat, 'Recurring', recurringItems().length ? `${active} active` : 'Rent, subscriptions, salary…'],
     ['plan', 'goals', ICONS.goal, 'Goals', goals ? `${goals} saving goal${goals === 1 ? '' : 's'}` : 'Save for something'],
+    ['notifications', '', icon('bell'), 'Notifications', unreadCount(notifyStore) ? `${unreadCount(notifyStore)} unread` : 'Reminders and insights'],
     ['cycle', '', ICONS.calendar, 'Pay cycle', cycleSummary()],
     ['settings', '', ICONS.settings, 'Settings', 'Connection, currency, decimals'],
   ];
@@ -1568,6 +1679,7 @@ function syncMark() {
 /** What the ⋯ menu at the top right offers on the current screen (none → no button). */
 function menuItems() {
   if (!state.data) return [];
+  if (state.view === 'notifications') return [];
   const wallet = state.view?.wallet;
   if (wallet) {
     if (!(state.data.wallets || []).some((w) => w.name === wallet)) return [];
@@ -1588,6 +1700,11 @@ function menuItems() {
   return [];
 }
 
+function bellHtml() {
+  const n = state.data ? unreadCount(notifyStore) : 0;
+  return `<button class="icon-btn bell-btn ${state.view === 'notifications' ? 'open' : ''}" data-action="open-notifications" aria-label="Notifications${n ? `, ${n} unread` : ''}">${icon('bell')}${n ? `<span class="bell-badge" aria-hidden="true">${n > 9 ? '9+' : n}</span>` : ''}</button>`;
+}
+
 function headerHtml() {
   const inner = state.view !== null;
   const items = menuItems();
@@ -1599,6 +1716,7 @@ function headerHtml() {
         <h1>${titleHtml()}${syncMark()}</h1>
       </div>
       <span class="hdr-loader ${state.loading ? 'on' : ''}" aria-hidden="true">${ICONS.refresh}</span>
+      ${bellHtml()}
       ${items.length ? `<button class="icon-btn menu-btn ${state.menu ? 'open' : ''}" data-action="toggle-menu" aria-label="More options" aria-expanded="${state.menu}">${ICONS.more}</button>` : ''}
     </div>
     ${state.menu && items.length ? `
@@ -1616,6 +1734,7 @@ function renderHeader() {
 
 function mainHtml() {
   if (state.view === 'settings') return renderSettings();
+  if (state.view === 'notifications') return renderNotifications();
   if (!state.data) {
     return state.loading || !state.error
       ? '<p class="empty">Loading your data…</p>'
@@ -1661,6 +1780,7 @@ function render() {
     app.innerHTML = renderSetup();
     return;
   }
+  checkNotifications();
   const animate = state.animate && !reducedMotion();
   state.animate = false;
   app.innerHTML = `
@@ -1794,6 +1914,17 @@ app.addEventListener('click', async (event) => {
       closeSwipes();
       target.disabled = false;
     }
+  } else if (action === 'notifications') {
+    openNotifications();
+  } else if (action === 'open-notifications') {
+    openNotifications();
+  } else if (action === 'clear-notifications') {
+    notifyStore = { ...notifyStore, items: [] };
+    saveNotify();
+    state.fresh = new Set();
+    render();
+  } else if (action === 'open-entry') {
+    openEntry(Number(target.dataset.id));
   } else if (action === 'add') {
     openEntry();
   } else if (action === 'edit-budgets') {
@@ -1943,6 +2074,12 @@ app.addEventListener('pointerout', (event) => {
   if (event.target.closest?.('.cf-hit') && !event.relatedTarget?.closest?.('.cf-hit')) showCashFlowReadout(null);
 });
 
+app.addEventListener('change', (event) => {
+  const el = event.target;
+  if (el.dataset?.notify) setNotifyPref(el.dataset.notify, el.checked);
+  else if (el.dataset?.notifyTime) setNotifyPref(el.dataset.notifyTime, el.value || DEFAULT_PREFS[el.dataset.notifyTime]);
+});
+
 app.addEventListener('input', (event) => {
   if (event.target.id !== 'search') return;
   state.search = event.target.value;
@@ -2072,7 +2209,7 @@ const startHash = location.hash.slice(1);
 const legacyTabs = { overview: 'home', summary: 'reports', goals: 'budgets', plan: 'budgets' };
 const startTab = legacyTabs[startHash] || startHash;
 if (TABS.includes(startTab)) state.tab = startTab;
-if (startTab === 'transactions' || startTab === 'recurring') state.view = startTab;
+if (startTab === 'transactions' || startTab === 'recurring' || startTab === 'notifications') state.view = startTab;
 if (startHash === 'goals') state.plan = 'goals';
 
 // A link straight to a screen (#transactions) still gets a Home entry behind it, so Back and the tabs work
