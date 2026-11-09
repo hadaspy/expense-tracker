@@ -1,7 +1,7 @@
 // Editing categories and subcategories. The same rules run in the Apps Script (Code.gs → editCategory); this copy is
 // used by the sample data and by the tests. Renaming is carried over to everything that uses the name.
 //
-// applyCategoryEdit(data, op) → the parts of `data` that changed: {categories, budgets, transactions, recurring}.
+// applyCategoryEdit(data, op) → the parts of `data` that changed: {categories, categoryStyles, budgets, transactions, recurring}.
 // Throws an Error with a plain message when the change isn't allowed.
 
 const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
@@ -16,6 +16,7 @@ export function applyCategoryEdit(data, op) {
   let budgets = { ...(data.budgets || {}) };
   let transactions = [...(data.transactions || [])];
   let recurring = [...(data.recurring || [])];
+  const categoryStyles = { ...(data.categoryStyles || {}) };
   const find = (name) => Object.keys(group).find((c) => same(c, name));
   const usedBy = (list, category, sub) => list.filter((t) => same(t.type, kind) && t.category === category && (sub === undefined || t.subcategory === sub));
 
@@ -24,6 +25,15 @@ export function applyCategoryEdit(data, op) {
     if (!name) throw new Error('Give the category a name.');
     if (find(name)) throw new Error(`A ${kind.toLowerCase()} category called "${name}" already exists.`);
     group[name] = [];
+  } else if (op.op === 'setStyle') {
+    const name = find(op.category);
+    if (!name) throw new Error(`Unknown category "${op.category}".`);
+    const icon = String(op.icon || '');
+    const colour = String(op.colour || '');
+    if (!/^[a-z0-9-]{0,40}$/.test(icon)) throw new Error('That icon name is not valid.');
+    if (!/^(#[0-9a-fA-F]{6})?$/.test(colour)) throw new Error('Colour must look like #2f80ed.');
+    if (icon || colour) categoryStyles[name] = { icon, colour: colour.toLowerCase() };
+    else delete categoryStyles[name];
   } else if (op.op === 'renameCategory') {
     const old = find(op.category);
     const name = clean(op.newName, 40);
@@ -36,6 +46,7 @@ export function applyCategoryEdit(data, op) {
     if (kind === 'Expense' && budgets[old] !== undefined) {
       budgets = Object.fromEntries(Object.entries(budgets).map(([key, v]) => [key === old ? name : key, v]));
     }
+    if (categoryStyles[old] && old !== name) { categoryStyles[name] = categoryStyles[old]; delete categoryStyles[old]; }
     transactions = transactions.map((t) => (same(t.type, kind) && t.category === old ? { ...t, category: name } : t));
     recurring = recurring.map((t) => (same(t.type, kind) && t.category === old ? { ...t, category: name } : t));
   } else if (op.op === 'deleteCategory') {
@@ -44,6 +55,7 @@ export function applyCategoryEdit(data, op) {
     const count = usedBy(transactions, old).length + usedBy(recurring, old).length;
     if (count) throw new Error(`"${old}" is used by ${count} ${count === 1 ? 'entry' : 'entries'}. Rename it, or move those entries to another category first.`);
     delete group[old];
+    delete categoryStyles[old];
     if (kind === 'Expense') delete budgets[old];
   } else {
     const parent = find(op.category);
@@ -76,5 +88,5 @@ export function applyCategoryEdit(data, op) {
       throw new Error('Unknown change.');
     }
   }
-  return { categories, budgets, transactions, recurring };
+  return { categories, categoryStyles, budgets, transactions, recurring };
 }

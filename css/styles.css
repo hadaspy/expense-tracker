@@ -1425,8 +1425,8 @@ button.notif-main:active { opacity: 0.7; }
 .bud-right .muted { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Transaction rows: three lines (category, wallet, note) and an icon as tall as the three together */
-.tx > .tx-icon.tall { width: 58px; height: 58px; border-radius: 17px; }
-.tx > .tx-icon.tall .ico { width: 28px; height: 28px; }
+.tx > .tx-icon.tall { width: 58px; height: 58px; border-radius: 50%; background: color-mix(in srgb, var(--cat, var(--accent)) 14%, transparent); }
+.tx > .tx-icon.tall .ico { width: 28px; height: 28px; color: var(--cat, var(--accent-text)); }
 .tx-main { gap: 1px; }
 .tx-title { font-size: 15px; line-height: 20px; }
 .tx-sub { font-weight: 400; color: var(--muted); }
@@ -1440,3 +1440,19 @@ button.notif-main:active { opacity: 0.7; }
   .hdr-loader { width: 24px; }
   .sync { margin-left: 6px; }
 }
+
+/* Customizing a category: icon and colour pickers */
+.cat-dot { flex-shrink: 0; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: color-mix(in srgb, var(--cat) 14%, transparent); }
+.cat-dot .ico { width: 22px; height: 22px; color: var(--cat); }
+.look-preview { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.look-dot { display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%; background: color-mix(in srgb, var(--cat) 14%, transparent); }
+.look-dot .ico { width: 28px; height: 28px; color: var(--cat); }
+.icon-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.icon-pick { aspect-ratio: 1; display: grid; place-items: center; border-radius: 50%; background: var(--input); box-shadow: inset 0 0 0 1px var(--edge); color: var(--text); font-size: 11px; font-weight: 600; }
+.icon-pick .ico { width: 22px; height: 22px; }
+.icon-pick.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent); }
+.swatch-btn.auto-swatch { display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+
+/* No zooming: no pinch or double-tap zoom, and fields are 16px so iOS doesn't zoom in when you tap one */
+html, body { touch-action: pan-x pan-y; }
+input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px; }

@@ -114,7 +114,17 @@ const categoryIconName = (name) => {
   const hit = CATEGORY_RULES.find(([re]) => re.test(n));
   return hit ? hit[1] : 'tag';
 };
-export const categoryIcon = (name) => icon(categoryIconName(name));
+// Looks you chose yourself (More → Categories): {name: {icon, colour}}, set by the app when data arrives
+let customStyles = {};
+export const setCategoryStyles = (map) => { customStyles = map || {}; };
+export const categoryStyle = (name) => customStyles[name] || {};
+
+export const categoryIcon = (name) => {
+  const mine = customStyles[name]?.icon;
+  return icon(mine && PH[mine] ? mine : categoryIconName(name));
+};
+/** The icon name a category gets on its own (before you pick one). */
+export const autoCategoryIcon = (name) => categoryIconName(name);
 
 // One colour per kind of category, so the same category looks the same on Home and in Budgets
 const COLOUR_FAMILIES = [
@@ -132,7 +142,7 @@ const COLOUR_FAMILIES = [
 const SPARE_COLOURS = ['#2f80ed', '#e0529c', '#14a3b8', '#8e5cf0', '#f08a1c', '#18a572', '#e5484d', '#5b6cf0'];
 
 /** The colour of a category: by what kind it is (food, transport…), otherwise a steady pick from its name. */
-export const categoryColour = (name) => {
+export const autoCategoryColour = (name) => {
   const iconName = categoryIconName(name);
   const family = COLOUR_FAMILIES.find(([, icons]) => icons.includes(iconName));
   if (family) return family[0];
@@ -140,3 +150,17 @@ export const categoryColour = (name) => {
   for (const ch of String(name || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   return SPARE_COLOURS[hash % SPARE_COLOURS.length];
 };
+export const categoryColour = (name) => {
+  const mine = customStyles[name]?.colour;
+  return /^#[0-9a-f]{6}$/i.test(mine || '') ? mine : autoCategoryColour(name);
+};
+
+/** What you can pick when customizing a category. */
+export const PICKABLE_COLOURS = ['#f08a1c', '#d9a21b', '#18a572', '#14a3b8', '#2f80ed', '#5b6cf0', '#8e5cf0', '#e0529c', '#e5484d', '#a67c52', '#64748b', '#0f172a'];
+export const PICKABLE_ICONS = [
+  'fork-knife', 'coffee', 'hamburger', 'pizza', 'beer-stein', 'wine', 'popcorn', 'basket', 'shopping-cart', 'shopping-bag', 'storefront', 't-shirt',
+  'car', 'bus', 'taxi', 'train', 'gas-pump', 'bicycle', 'motorcycle', 'airplane', 'suitcase-simple', 'house', 'couch', 'bed', 'plant', 'wrench',
+  'lightning', 'drop', 'wifi-high', 'phone', 'device-mobile', 'receipt', 'credit-card', 'repeat', 'heart', 'heartbeat', 'pill', 'first-aid-kit', 'tooth', 'barbell',
+  'film-slate', 'game-controller', 'music-notes', 'television', 'book-open', 'graduation-cap', 'briefcase', 'users', 'baby', 'dog', 'paw-print', 'gift',
+  'confetti', 'scissors', 'coins', 'hand-coins', 'piggy-bank', 'bank', 'money', 'trend-up', 'chart-line-up', 'percent', 'target', 'tag',
+].filter((name) => PH[name]);

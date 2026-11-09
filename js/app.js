@@ -22,10 +22,10 @@ import { openNewBudgetSheet } from './newbudget.js';
 import { DEFAULT_PREFS, evaluate, unreadCount } from './notify.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
-import { ICONS, categoryColour, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
+import { ICONS, autoCategoryColour, autoCategoryIcon, categoryColour, categoryIcon, categoryStyle, esc, highlight, icon, reducedMotion, setCategoryStyles } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '5.2.0';
+const APP_VERSION = '5.3.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -155,16 +155,29 @@ function openCategorySheet(kind, category, sub) {
   if (kind === 'new-category') {
     openNameSheet({
       title: `New ${lower} category`, label: 'Name', saveLabel: 'Add category',
-      onSave: async (name) => { await runCategoryOp({ op: 'addCategory', type, name }); done('Category added'); },
+      style: { icon: '', colour: '', autoIcon: 'tag', autoColour: '#2f80ed' },
+      hint: 'Pick an icon and colour, or leave them on Auto.',
+      onSave: async (name, look) => {
+        await runCategoryOp({ op: 'addCategory', type, name });
+        const added = name.replace(/\s+/g, ' ').trim();
+        if (look.icon || look.colour) await runCategoryOp({ op: 'setStyle', type, category: added, icon: look.icon, colour: look.colour });
+        done('Category added');
+      },
     });
   } else if (kind === 'edit-category') {
+    const mine = categoryStyle(category);
     openNameSheet({
       title: 'Edit category', label: 'Name', value: category, saveLabel: 'Save',
+      style: { icon: mine.icon || '', colour: mine.colour || '', autoIcon: autoCategoryIcon(category), autoColour: autoCategoryColour(category) },
       hint: 'Renaming also updates your budgets, entries and recurring items that use it.',
-      onSave: async (name) => {
-        if (name.trim() === category) return;
-        await runCategoryOp({ op: 'renameCategory', type, category, newName: name });
-        done('Category renamed');
+      onSave: async (name, look) => {
+        const next = name.replace(/\s+/g, ' ').trim();
+        let target = category;
+        if (next && next !== category) { await runCategoryOp({ op: 'renameCategory', type, category, newName: next }); target = next; }
+        if (look.icon !== (mine.icon || '') || look.colour !== (mine.colour || '')) {
+          await runCategoryOp({ op: 'setStyle', type, category: target, icon: look.icon, colour: look.colour });
+        }
+        done('Category saved');
       },
       onDelete: async () => { await runCategoryOp({ op: 'deleteCategory', type, category }); done('Category deleted'); },
     });
@@ -195,7 +208,7 @@ function renderCategories() {
   const list = names.map((name) => `
       <li class="card cat-card">
         <button class="cat-head" data-action="edit-category" data-name="${esc(name)}" aria-label="Edit ${esc(name)}">
-          <span class="tx-icon ${type.toLowerCase()}">${categoryIcon(name)}</span>
+          <span class="cat-dot" style="--cat:${categoryColour(name)}">${categoryIcon(name)}</span>
           <span class="cat-name">${esc(name)}</span>
           <span class="muted small">${groups[name].length ? `${groups[name].length} sub` : ''}</span>
           <span class="row-chevron">${ICONS.chevron}</span>
@@ -993,7 +1006,7 @@ function txRow(tx, { perspective = null, query = '', hideSub = false } = {}) {
     <li class="swipe">
       <button class="swipe-delete" data-action="delete-tx" data-id="${tx.id}" tabindex="-1">${ICONS.trash}<span>Delete</span></button>
       <div class="tx" data-action="edit-tx" data-id="${tx.id}" role="button" tabindex="0">
-        <span class="tx-icon tall ${tx.type.toLowerCase()}">${iconHtml}</span>
+        <span class="tx-icon tall ${tx.type.toLowerCase()}" style="--cat:${tx.type === TRANSFER ? 'var(--accent-text)' : categoryColour(tx.category)}">${iconHtml}</span>
         <span class="tx-main">
           <span class="tx-title">${title}</span>
           <span class="tx-detail">${wallet}</span>
@@ -1884,6 +1897,7 @@ function render() {
     app.innerHTML = renderSetup();
     return;
   }
+  setCategoryStyles(state.data?.categoryStyles);
   checkNotifications();
   const animate = state.animate && !reducedMotion();
   state.animate = false;
@@ -2310,6 +2324,45 @@ document.addEventListener('visibilitychange', () => {
 
 // Keep "Updated x min ago" current
 setInterval(() => { if (!state.loading) renderHeader(); }, 30000);
+
+// ---------- decimals as small raised numbers ----------
+// Every amount in the app (lists, cards, budgets, reports…) shows its cents like a superscript. The amounts are plain
+// text ("Rp 12.345,50"), so after each change to the screen this finds "digit,two digits" and raises the two digits.
+// (Sheets and text fields are left as they are.)
+
+const CENTS = /(\d),(\d{2})(?!\d)/;
+function raiseDecimals(root) {
+  if (decimals() !== 2) return;
+  const found = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (CENTS.test(node.nodeValue) && !node.parentElement?.closest('.dec, .tx-note, input, textarea, script, style')) found.push(node);
+  }
+  for (const node of found) {
+    const parts = document.createDocumentFragment();
+    let rest = node.nodeValue;
+    for (let m = CENTS.exec(rest); m; m = CENTS.exec(rest)) {
+      parts.append(rest.slice(0, m.index + 1));
+      const sup = document.createElement('sup');
+      sup.className = 'dec';
+      sup.textContent = m[2];
+      parts.append(sup);
+      rest = rest.slice(m.index + m[0].length);
+    }
+    parts.append(rest);
+    node.replaceWith(parts);
+  }
+}
+// Runs right after each change (before the screen is painted, so ",00" is never seen); its own edits find nothing more to do
+new MutationObserver((records) => {
+  if (records.every((r) => r.target.closest?.('.num'))) return; // the count-up animation only touches whole numbers
+  raiseDecimals(app);
+}).observe(app, { childList: true, subtree: true });
+
+// ---------- no zooming ----------
+// The viewport tag forbids it, but iOS ignores that for pinching, so the gesture itself is cancelled too.
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, (event) => event.preventDefault());
+document.addEventListener('touchmove', (event) => { if (event.touches.length > 1) event.preventDefault(); }, { passive: false });
 
 // ---------- start ----------
 
