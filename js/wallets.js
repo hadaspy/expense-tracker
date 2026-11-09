@@ -11,11 +11,13 @@ const grouped = (n) => (n === null ? '' : formatNumber(n));
 /**
  * @param {object} o
  * @param {string[]} o.existing  names already in use (case-insensitive check)
+ * @param {string[]} [o.types]  type names already used by your wallets (offered as chips next to the standard ones)
+ * @param {number} [o.sameTypeCount] how many wallets (including this one) have this wallet's current type
  * @param {Function} o.onSave    async ({name, type, openingBalance}) => void
  */
-export function openWalletSheet({ existing = [], wallet = null, defaultCurrency = '', onSave }) {
+export function openWalletSheet({ existing = [], wallet = null, defaultCurrency = '', types = [], sameTypeCount = 0, onSave }) {
   const editing = !!wallet;
-  const state = { name: wallet?.name || '', type: wallet?.type || 'Bank', currency: wallet?.currency || '', amount: null, owe: false };
+  const state = { name: wallet?.name || '', type: wallet?.type || 'Bank', currency: wallet?.currency || '', amount: null, owe: false, renameAll: false };
   let busy = false;
   let error = '';
 
@@ -32,6 +34,8 @@ export function openWalletSheet({ existing = [], wallet = null, defaultCurrency 
     setTimeout(() => backdrop.remove(), 300);
   };
 
+  const allTypes = [...new Set([...WALLET_TYPES, ...types.filter(Boolean)])];
+
   function render() {
     sheet.innerHTML = `
       <div class="sheet-grabber"></div>
@@ -47,8 +51,17 @@ export function openWalletSheet({ existing = [], wallet = null, defaultCurrency 
         </label>
         <p class="field-label">Type</p>
         <div class="chip-row wrap">
-          ${WALLET_TYPES.map((t) => `<button type="button" class="chip ${state.type === t ? 'active' : ''}" data-act="type" data-v="${esc(t)}" aria-pressed="${state.type === t}">${esc(t)}</button>`).join('')}
+          ${allTypes.map((t) => `<button type="button" class="chip ${state.type === t ? 'active' : ''}" data-act="type" data-v="${esc(t)}" aria-pressed="${state.type === t}">${esc(t)}</button>`).join('')}
         </div>
+        <label class="field">
+          <span class="field-label">Type name <span class="muted">(you can edit it)</span></span>
+          <input class="note-input" data-f="type" maxlength="30" placeholder="e.g. Bank, Super app, Pocket money" value="${esc(state.type)}" autocomplete="off">
+        </label>
+        ${editing && sameTypeCount > 1 && state.type.trim() && state.type.trim() !== wallet.type ? `
+        <label class="switch-row">
+          <span><strong>Rename “${esc(wallet.type)}” everywhere</strong><span class="muted small">${sameTypeCount - 1} other wallet${sameTypeCount === 2 ? '' : 's'} with this type will get the new name too.</span></span>
+          <input type="checkbox" class="switch" data-f="rename-all" role="switch" ${state.renameAll ? 'checked' : ''}>
+        </label>` : ''}
         <label class="field">
           <span class="field-label">Currency <span class="muted">(optional)</span></span>
           <input class="note-input" data-f="currency" maxlength="6" placeholder="${esc(defaultCurrency ? `Default: ${defaultCurrency}` : 'Default currency')}" value="${esc(state.currency)}" autocomplete="off" autocapitalize="characters">
@@ -90,7 +103,8 @@ export function openWalletSheet({ existing = [], wallet = null, defaultCurrency 
       render();
       try {
         const currency = state.currency.trim();
-        await onSave(editing ? { name, type: state.type, currency } : { name, type: state.type, currency, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
+        const type = state.type.replace(/\s+/g, ' ').trim() || 'Other';
+        await onSave(editing ? { name, type, currency, renameType: state.renameAll && type !== wallet.type } : { name, type, currency, openingBalance: (state.amount || 0) * (state.owe ? -1 : 1) });
         close();
       } catch (e) {
         busy = false;
@@ -105,10 +119,20 @@ export function openWalletSheet({ existing = [], wallet = null, defaultCurrency 
     const f = event.target.dataset.f;
     if (f === 'name') state.name = event.target.value;
     if (f === 'currency') state.currency = event.target.value.slice(0, 6);
+    if (f === 'type') {
+      state.type = event.target.value;
+      if (/credit/i.test(state.type)) state.owe = true;
+      const box = sheet.querySelector('.switch-row [data-f="rename-all"]');
+      if (editing && sameTypeCount > 1 && (!!box) !== !!(state.type.trim() && state.type.trim() !== wallet.type)) { const pos = event.target.selectionStart; render(); const el = sheet.querySelector('[data-f="type"]'); el.focus(); el.setSelectionRange(pos, pos); }
+    }
     if (f === 'amount') {
       state.amount = digits(event.target.value);
       event.target.value = grouped(state.amount);
     }
+  });
+
+  backdrop.addEventListener('change', (event) => {
+    if (event.target.dataset.f === 'rename-all') state.renameAll = event.target.checked;
   });
 
   render();

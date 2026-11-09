@@ -1,6 +1,7 @@
 // Wallet cards: each wallet shows as a payment-card-style tile on Home, and you can style it yourself
 // (colour, pattern, a label such as "•••• 0329"). The look is saved in the sheet's Wallets → Card column
 // as "colour|pattern|label", so it's the same on every device.
+import { cardBrand } from './logos.js';
 import { esc } from './ui.js';
 
 // Every colour keeps small white text at 4.5:1 or better (with the 16% shade the stylesheet adds).
@@ -76,14 +77,16 @@ const NETWORKS = {
  * @param {string} o.caption    small text above the amount
  * @param {string} o.amountHtml the formatted amount (already escaped)
  * @param {string} [o.footHtml] bottom-left text (label or details, already escaped)
+ * @param {string} [o.wallet]   wallet name: its bank logo goes top right
  * @param {object} o.style      {colour, pattern}
  * @param {string} [o.attrs]    extra attributes (data-action etc.)
  * @param {string} [o.tag]      'button' (default) or 'div'
  */
-export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', style, attrs = '', tag = 'button', negative = false }) {
+export function cardHtml({ title, kicker, caption, amountHtml, footHtml = '', style, attrs = '', tag = 'button', negative = false, wallet = '' }) {
+  const brand = wallet ? cardBrand(wallet, style.logo) : { html: '', hideTitle: false };
   return `
     <${tag} class="wcard pattern-${style.pattern} finish-${style.finish || 'grain'} ${isLight(style.colour) ? 'is-light' : ''} ${negative ? 'is-negative' : ''}" style="--card-bg:${background(style.colour)}" ${attrs}>
-      <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-title">${esc(title)}</span></span>
+      <span class="wcard-top"><span class="wcard-kicker">${esc(kicker)}</span><span class="wcard-right">${brand.hideTitle ? '' : `<span class="wcard-title">${esc(title)}</span>`}${brand.html}</span></span>
       ${CONTACTLESS}
       <span class="wcard-mid"><span class="wcard-caption">${esc(caption)}</span><span class="wcard-amount">${amountHtml}</span></span>
       <span class="wcard-foot"><span class="wcard-foot-left"><span class="wcard-label">${footHtml}</span>${style.valid ? `<span class="wcard-valid"><small><span>VALID</span><span>THRU</span></small><span>${esc(style.valid)}</span></span>` : ''}</span>${NETWORKS[style.scheme || '']}</span>
@@ -134,6 +137,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
     style,
     tag: 'div',
     negative,
+    wallet: wallet.name,
   });
 
   function render() {

@@ -1387,3 +1387,56 @@ button.notif-main:active { opacity: 0.7; }
 .cat-subs { display: flex; flex-wrap: wrap; gap: 8px; padding-left: 52px; }
 .add-chip { border-style: dashed; color: var(--accent-text); }
 .cat-list + .btn-secondary { margin-top: 14px; }
+
+/* Bank logo at the top right of a card: drawn in the card's text colour, so it contrasts with any background */
+.wcard-right { display: flex; align-items: center; justify-content: flex-end; gap: 9px; min-width: 0; max-width: 72%; }
+.wcard-right .wcard-title { max-width: none; min-width: 0; }
+.wcard-brand { flex: none; height: 20px; width: min(calc(20px * var(--ar)), 92px); background: currentColor; -webkit-mask-position: center; mask-position: center; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; opacity: 0.96; }
+.wcard-brand.big { height: 30px; width: min(calc(30px * var(--ar)), 132px); }
+.wcard-chip { flex: none; width: 26px; height: 26px; padding: 3px; border-radius: 8px; background: #fff; object-fit: contain; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2); }
+.wlogo.wide img { padding: 8px 4px; }
+
+/* Budget rings on Home: bigger, coloured by category, no text */
+.brings { gap: 14px; }
+.bring { flex: 0 0 84px; gap: 0; }
+.bring-ring { --ring: var(--cat, var(--accent)); width: 84px; height: 84px; }
+.bring-ring.neg { --ring: var(--neg); }
+.bring-ring svg { stroke-width: 5.5; }
+.bring-icon { width: 62px; height: 62px; background: color-mix(in srgb, var(--cat, var(--accent)) 14%, transparent); }
+.bring-icon .ico { width: 32px; height: 32px; color: var(--cat, var(--accent-text)); }
+.bring-add .bring-icon { background: var(--tile-icon); }
+.bring-add .bring-icon svg { width: 24px; height: 24px; }
+
+/* Budgets list: icon, name + bar, spent / budget */
+.bud-card { padding: 14px 16px 6px; }
+.bud-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); padding-bottom: 8px; }
+.bud-list { list-style: none; margin: 0; padding: 0; }
+.bud-row { display: grid; grid-template-columns: 38px 1fr auto; gap: 14px; align-items: center; padding: 14px 0; }
+.bud-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: color-mix(in srgb, var(--cat) 14%, transparent); }
+.bud-icon .ico { width: 24px; height: 24px; color: var(--cat); }
+.bud-mid { min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.bud-name { font-size: 16.5px; font-weight: 500; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bud-bar { position: relative; height: 7px; border-radius: 4px; background: var(--bar-bg); }
+.bud-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--cat); transition: width 0.8s var(--ease-out); }
+.bud-row.over .bud-fill { background: var(--neg); }
+.bud-pace { position: absolute; top: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; border-radius: 50%; background: var(--pos); box-shadow: 0 0 0 2.5px var(--card); }
+.bud-right { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+.bud-right strong { font-size: 16.5px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bud-right .muted { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Transaction rows: three lines (category, wallet, note) and an icon as tall as the three together */
+.tx > .tx-icon.tall { width: 58px; height: 58px; border-radius: 17px; }
+.tx > .tx-icon.tall .ico { width: 28px; height: 28px; }
+.tx-main { gap: 1px; }
+.tx-title { font-size: 15px; line-height: 20px; }
+.tx-sub { font-weight: 400; color: var(--muted); }
+.tx-detail { font-size: 13px; line-height: 18px; }
+.tx-note { min-height: 17px; font-size: 11.5px; line-height: 17px; color: var(--muted); opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tx-side { align-self: flex-start; padding-top: 2px; }
+/* Narrow phones: keep long titles (Transactions, Notifications) readable next to the bell and ⋯ buttons */
+@media (max-width: 420px) {
+  .topbar h1 { font-size: 23px; }
+  .topbar .icon-btn { margin-left: 4px; }
+  .hdr-loader { width: 24px; }
+  .sync { margin-left: 6px; }
+}

@@ -109,8 +109,34 @@ const CATEGORY_RULES = [
 ];
 
 /** Icon for a category (or subcategory) name; anything unknown gets a tag. */
-export const categoryIcon = (name) => {
+const categoryIconName = (name) => {
   const n = String(name || '').toLowerCase();
   const hit = CATEGORY_RULES.find(([re]) => re.test(n));
-  return icon(hit ? hit[1] : 'tag');
+  return hit ? hit[1] : 'tag';
+};
+export const categoryIcon = (name) => icon(categoryIconName(name));
+
+// One colour per kind of category, so the same category looks the same on Home and in Budgets
+const COLOUR_FAMILIES = [
+  ['#f08a1c', ['fork-knife', 'hamburger', 'pizza', 'coffee', 'beer-stein', 'wine']],
+  ['#2f80ed', ['car', 'bus', 'taxi', 'gas-pump', 'train', 'bicycle', 'motorcycle', 'airplane', 'airplane-tilt', 'suitcase-simple']],
+  ['#e0529c', ['shopping-bag', 'shopping-cart', 'bag-simple', 'basket', 'storefront', 't-shirt', 'scissors']],
+  ['#a67c52', ['house', 'couch', 'bed', 'buildings', 'plant', 'wrench']],
+  ['#e5484d', ['heart', 'heartbeat', 'first-aid-kit', 'pill', 'tooth', 'bandaids', 'barbell', 'hand-heart']],
+  ['#8e5cf0', ['film-slate', 'game-controller', 'music-notes', 'television', 'popcorn']],
+  ['#14a3b8', ['receipt', 'wifi-high', 'lightning', 'drop', 'phone', 'device-mobile', 'devices', 'credit-card', 'repeat']],
+  ['#5b6cf0', ['graduation-cap', 'book-open', 'briefcase', 'users']],
+  ['#18a572', ['coins', 'hand-coins', 'piggy-bank', 'money', 'bank', 'trend-up', 'chart-line-up', 'percent', 'scales', 'currency-circle-dollar', 'target']],
+  ['#d9a21b', ['gift', 'dog', 'paw-print', 'baby', 'confetti', 'sparkle', 'flag']],
+];
+const SPARE_COLOURS = ['#2f80ed', '#e0529c', '#14a3b8', '#8e5cf0', '#f08a1c', '#18a572', '#e5484d', '#5b6cf0'];
+
+/** The colour of a category: by what kind it is (food, transport…), otherwise a steady pick from its name. */
+export const categoryColour = (name) => {
+  const iconName = categoryIconName(name);
+  const family = COLOUR_FAMILIES.find(([, icons]) => icons.includes(iconName));
+  if (family) return family[0];
+  let hash = 0;
+  for (const ch of String(name || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return SPARE_COLOURS[hash % SPARE_COLOURS.length];
 };

@@ -2,6 +2,7 @@
 // "GoPay") is matched against the list below; the pictures are bundled in img/logos (no network needed).
 // A wallet whose name isn't known gets an icon for its type instead, and you can set a logo yourself in
 // Customize card → "Logo website" (for example bca.co.id).
+import { CHIPS, MONO } from './logo-data.js';
 import { esc, icon } from './ui.js';
 
 const RULES = [
@@ -12,7 +13,7 @@ const RULES = [
   ['maybank', /maybank/], ['hsbc', /hsbc/], ['scb', /standard chartered|\bscb\b/], ['paypal', /paypal/], ['wise', /\bwise\b|transferwise/],
   ['stockbit', /stockbit/], ['ajaib', /ajaib/], ['binance', /binance/], ['indodax', /indodax/], ['tokocrypto', /tokocrypto/],
   ['pluang', /pluang/], ['kredivo', /kredivo/], ['akulaku', /akulaku/], ['revolut', /revolut/], ['tokopedia', /tokopedia|tokped/],
-  ['traveloka', /traveloka/], ['airwallex', /airwallex/],
+  ['traveloka', /traveloka/], ['airwallex', /airwallex/], ['nex', /\bnex\b/], ['superbank', /super ?bank/],
 ];
 
 const TYPE_ICONS = {
@@ -38,6 +39,30 @@ export function logoSrc(name, custom = '') {
 /** The round logo tile: the picture on top of a type icon, which stays visible if the picture can't load. */
 export function walletLogo(wallet, custom = '') {
   const src = logoSrc(wallet.name, custom);
+  const key = custom ? '' : logoKey(wallet.name);
   const glyph = icon(TYPE_ICONS[String(wallet.type || '').toLowerCase()] || 'wallet');
-  return `<span class="wlogo ${src ? 'has-img' : ''}">${glyph}${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
+  return `<span class="wlogo ${src ? 'has-img' : ''} ${key === 'bca' ? 'wide' : ''}">${glyph}${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
+}
+
+/**
+ * The logo at the top right of a card, in the card's text colour so it always contrasts with the background
+ * (one-colour logos are drawn as a mask; solid-square ones and your own website's logo sit in a small white chip).
+ * BCA's logo (and any other wordmark that already says the name, like Mandiri or Superbank) replaces the wallet name. → {html, hideTitle}
+ */
+export function cardBrand(name, custom = '') {
+  const domain = String(custom || '').trim();
+  if (domain) {
+    return { html: `<img class="wcard-chip" src="${esc(logoSrc(name, domain))}" alt="" onerror="this.remove()">`, hideTitle: false };
+  }
+  const key = logoKey(name);
+  if (!key) return { html: '', hideTitle: false };
+  if (MONO[key]) {
+    const big = MONO[key] >= 3; // a wordmark that already says the name: shown larger, and the wallet name is left out
+    return {
+      html: `<span class="wcard-brand ${big ? 'big' : ''}" role="img" aria-label="${esc(name)}" style="--ar:${MONO[key]};-webkit-mask-image:url(img/logos/mono/${key}.png);mask-image:url(img/logos/mono/${key}.png)"></span>`,
+      hideTitle: big,
+    };
+  }
+  if (CHIPS.includes(key)) return { html: `<img class="wcard-chip" src="img/logos/${key}.png" alt="" onerror="this.remove()">`, hideTitle: false };
+  return { html: '', hideTitle: false };
 }

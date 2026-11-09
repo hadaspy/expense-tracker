@@ -237,6 +237,7 @@ export function monthPlan(budgets, monthTransactions, year, month, now = new Dat
   return {
     mode, total, used, left, daysLeft, ...totals,
     perDay: daysLeft > 0 ? Math.max(0, left) / daysLeft : 0,
+    elapsed: isCurrent ? Math.min(1, Math.max(0, (now - start) / (end - start))) : isPast ? 1 : 0, // how far through the month we are
     fraction: total > 0 ? used / total : used > 0 ? 1 : 0,
     budgets: progress,
   };

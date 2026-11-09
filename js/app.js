@@ -22,10 +22,10 @@ import { openNewBudgetSheet } from './newbudget.js';
 import { DEFAULT_PREFS, evaluate, unreadCount } from './notify.js';
 import { openPaydaySheet } from './payday.js';
 import { openWalletSheet } from './wallets.js';
-import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
+import { ICONS, categoryColour, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -266,7 +266,7 @@ function setNotifyPref(name, value) {
   if (!notifyStore.seen) delete notifyStore.seen;
   saveNotify();
   // The schedule for Telegram lives on the server, so the bot sends the same things while the app is closed
-  if (!isDemo && ['reminder', 'reminderTime', 'daily', 'weekly', 'insightTime', 'telegram'].includes(name)) {
+  if (!isDemo && ['reminder', 'reminderTime', 'daily', 'weekly', 'insightTime', 'telegram', 'entries'].includes(name)) {
     apiPost({ action: 'setNotify', [name]: value }).catch((error) => toast(`Couldn't save for Telegram: ${error.message}`));
   }
   checkNotifications();
@@ -318,6 +318,7 @@ function renderNotifications() {
       ${row('daily', 'Daily insight', 'Yesterday\'s total expense, your biggest category and how it compares with a usual day.')}
       ${row('weekly', 'Weekly insight', 'Last week\'s spending, the change from the week before, your top category and income.')}
       ${row('telegram', 'Also send them to Telegram', 'The bot sends the reminder and the insights even while the app is closed. Needs the bot connected and its timer set up (see the README).')}
+      ${row('entries', 'Telegram message for every new entry', 'When an entry is added from the app or a Shortcut, the bot tells you on Telegram. Entries you make in Telegram are confirmed in the chat already.')}
       ${row('activity', 'Entries added outside the app', 'A note for entries made from a Shortcut, Telegram or the sheet.')}
       <div class="notify-foot">${time('insightTime', 'Insights appear from')}</div>
     </section>
@@ -417,7 +418,7 @@ async function saveTransaction(transaction, id = null) {
   applyLocal((list) => [...list, { id: temp, ...transaction }]);
   if (isDemo) { toast(`Saved #${temp}`); return; }
   toast('Saving…');
-  apiPost({ action: 'add', transaction }).then((result) => {
+  apiPost({ action: 'add', transaction, source: 'app' }).then((result) => {
     markSeen(result.id);
     applyLocal((list) => list.map((t) => (t.id === temp ? { ...t, id: result.id } : t)));
     toast(`Saved #${result.id}`);
@@ -563,7 +564,7 @@ async function addWallet(wallet) {
 
 function openNewWallet() {
   if (!state.data) return;
-  openWalletSheet({ existing: (state.data.wallets || []).map((w) => w.name), defaultCurrency: currency(), onSave: addWallet });
+  openWalletSheet({ existing: (state.data.wallets || []).map((w) => w.name), defaultCurrency: currency(), types: (state.data.wallets || []).map((w) => w.type), onSave: addWallet });
 }
 
 async function removeWallet(name) {
@@ -601,18 +602,20 @@ async function removeWallet(name) {
   }
 }
 
-async function saveWalletEdit(oldName, { name, type, currency: walletCur }) {
+async function saveWalletEdit(oldName, { name, type, currency: walletCur, renameType = false }) {
   let patch;
+  const oldType = (state.data.wallets || []).find((w) => w.name === oldName)?.type;
+  const retype = (w) => (w.name === oldName ? { ...w, name, type, currency: walletCur } : renameType && w.type === oldType ? { ...w, type } : w);
   if (isDemo) {
     const swap = (v) => (v === oldName ? name : v);
     patch = {
-      wallets: state.data.wallets.map((w) => (w.name === oldName ? { ...w, name, type, currency: walletCur } : w)),
+      wallets: state.data.wallets.map(retype),
       transactions: (state.data.transactions || []).map((t) => ({ ...t, wallet: swap(t.wallet), toWallet: swap(t.toWallet) })),
       recurring: recurringItems().map((r) => ({ ...r, wallet: swap(r.wallet), toWallet: swap(r.toWallet) })),
       goals: (state.data.goals || []).map((g) => ({ ...g, wallet: swap(g.wallet) })),
     };
   } else {
-    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type, currency: walletCur })).wallets;
+    const wallets = (await apiPost({ action: 'updateWallet', name: oldName, newName: name, type, currency: walletCur, renameType })).wallets;
     const swap = (v) => (v === oldName ? name : v);
     patch = {
       wallets,
@@ -632,7 +635,11 @@ async function saveWalletEdit(oldName, { name, type, currency: walletCur }) {
 function openEditWallet(name) {
   const wallet = (state.data.wallets || []).find((w) => w.name === name);
   if (!wallet) return;
-  openWalletSheet({ existing: state.data.wallets.map((w) => w.name), wallet, defaultCurrency: currency(), onSave: (values) => saveWalletEdit(name, values) });
+  openWalletSheet({
+    existing: state.data.wallets.map((w) => w.name), wallet, defaultCurrency: currency(),
+    types: state.data.wallets.map((w) => w.type), sameTypeCount: state.data.wallets.filter((w) => w.type === wallet.type).length,
+    onSave: (values) => saveWalletEdit(name, values),
+  });
 }
 
 let orderQueue = Promise.resolve();
@@ -851,6 +858,7 @@ function walletCards() {
       footHtml: esc(style.label),
       style,
       action: `data-action="wallet" data-name="${esc(w.name)}"`,
+      wallet: w.name,
       label: `${w.name}: ${moneyFor(w.name, balance)}`,
       negative: balance < 0,
     });
@@ -945,25 +953,22 @@ function showCard(target) {
 /** Budget circles at the top of Home: one ring per budget (or the biggest spending categories until you set budgets). */
 function budgetRings(plan, monthTxs) {
   const rings = plan.budgets.length
-    ? [...plan.budgets].sort((a, b) => b.fraction - a.fraction).map((b) => ({ name: b.category, fraction: b.fraction, cls: budgetClass(b.fraction) }))
-    : byCategory(monthTxs, EXPENSE).slice(0, 6).map((c) => ({ name: c.category, fraction: c.share, cls: 'accent' }));
+    ? [...plan.budgets].sort((a, b) => b.fraction - a.fraction).map((b) => ({ name: b.category, fraction: b.fraction }))
+    : byCategory(monthTxs, EXPENSE).slice(0, 6).map((c) => ({ name: c.category, fraction: c.share }));
   const items = rings.map((r) => {
     const pct = Math.round(r.fraction * 100);
     const fill = Math.max(0, Math.min(100, pct));
     return `
       <button class="bring" data-action="plan" data-plan="budgets" aria-label="${esc(r.name)}: ${pct}%${plan.budgets.length ? ' of budget' : ' of spending'}">
-        <span class="bring-ring ${r.cls}">
+        <span class="bring-ring ${plan.budgets.length && r.fraction > 1 ? 'neg' : ''}" style="--cat:${categoryColour(r.name)}">
           <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="bring-track" cx="32" cy="32" r="29" pathLength="100"/><circle class="bring-fill" cx="32" cy="32" r="29" pathLength="100" stroke-dasharray="100" stroke-dashoffset="${100 - fill}"/></svg>
           <span class="bring-icon">${categoryIcon(r.name)}</span>
         </span>
-        <span class="bring-name">${esc(r.name)}</span>
-        <span class="bring-pct ${r.cls}">${pct}%</span>
       </button>`;
   });
   items.push(`
       <button class="bring bring-add" data-action="edit-budgets" aria-label="${plan.budgets.length ? 'Edit budgets' : 'Set budgets'}">
         <span class="bring-ring"><span class="bring-icon">${ICONS.plus}</span></span>
-        <span class="bring-name">${plan.budgets.length ? 'Budgets' : 'Set budgets'}</span>
       </button>`);
   return `<section class="brings" aria-label="Budgets">${items.join('')}</section>`;
 }
@@ -971,15 +976,16 @@ function budgetRings(plan, monthTxs) {
 function txRow(tx, { perspective = null, query = '' } = {}) {
   const cls = amountClass(tx, perspective);
   const sign = cls === 'neg' ? '−' : cls === 'pos' ? '+' : '';
-  let iconHtml, title, detail;
+  // Three lines: category, wallet, note (small)
+  let iconHtml, title, wallet;
   if (tx.type === TRANSFER) {
     iconHtml = icon('arrows-left-right');
     title = esc('Transfer');
-    detail = `${highlight(tx.wallet, query)} → ${highlight(tx.toWallet, query)}`;
+    wallet = `${highlight(tx.wallet, query)} → ${highlight(tx.toWallet, query)}`;
   } else {
     iconHtml = categoryIcon(tx.category);
-    title = highlight(tx.subcategory || tx.category || 'Uncategorized', query);
-    detail = (tx.subcategory ? `${highlight(tx.category, query)} · ` : '') + highlight(tx.wallet, query);
+    title = highlight(tx.category || 'Uncategorized', query) + (tx.subcategory ? ` <span class="tx-sub">› ${highlight(tx.subcategory, query)}</span>` : '');
+    wallet = highlight(tx.wallet, query);
   }
   const time = tx.when.toTimeString().slice(0, 5);
   // Tap to edit; swipe left to reveal Delete
@@ -987,10 +993,11 @@ function txRow(tx, { perspective = null, query = '' } = {}) {
     <li class="swipe">
       <button class="swipe-delete" data-action="delete-tx" data-id="${tx.id}" tabindex="-1">${ICONS.trash}<span>Delete</span></button>
       <div class="tx" data-action="edit-tx" data-id="${tx.id}" role="button" tabindex="0">
-        <span class="tx-icon ${tx.type.toLowerCase()}">${iconHtml}</span>
+        <span class="tx-icon tall ${tx.type.toLowerCase()}">${iconHtml}</span>
         <span class="tx-main">
           <span class="tx-title">${title}</span>
-          <span class="tx-detail">${detail}${tx.note ? ` · <em>${highlight(tx.note, query)}</em>` : ''}</span>
+          <span class="tx-detail">${wallet}</span>
+          <span class="tx-note">${tx.note ? highlight(tx.note, query) : ''}</span>
         </span>
         <span class="tx-side">
           <span class="amount ${cls}">${sign}${listMoney(tx.amount, walletCurrency(tx.wallet))}</span>
@@ -1040,15 +1047,21 @@ function listMoney(value, cur = currency()) {
 /** An amount that never breaks across lines ("Rp" stays with the number). */
 const nb = (value) => `<span class="nowrap">${esc(money(value))}</span>`;
 
-function budgetRow(b, daysLeft) {
-  const cls = budgetClass(b.fraction);
-  const left = b.limit - b.spent;
-  const perDay = left > 0 && daysLeft > 0 ? ` · <span class="nowrap">${esc(money(left / daysLeft))}/day</span>` : '';
+/** One budget: icon in the category's colour, name and a bar (the dot is where you'd be if you spent evenly), spent on the right. */
+function budgetRow(b, plan) {
+  const over = b.fraction > 1;
+  const pace = Math.round(plan.elapsed * 100);
   return `
-    <li class="budget">
-      <span class="cat-line"><span>${categoryIcon(b.category)} ${esc(b.category)}</span><span class="${cls}">${Math.round(b.fraction * 100)}%</span></span>
-      ${bar(b.fraction, cls)}
-      <span class="muted">${nb(b.spent)} of ${nb(b.limit)} · ${left >= 0 ? `${nb(left)} left${perDay}` : `<span class="neg">${nb(-left)} over</span>`}</span>
+    <li class="bud-row ${over ? 'over' : ''}" style="--cat:${categoryColour(b.category)}" aria-label="${esc(b.category)}: ${esc(money(b.spent))} of ${esc(money(b.limit))}${over ? ', over budget' : ''}">
+      <span class="bud-icon">${categoryIcon(b.category)}</span>
+      <span class="bud-mid">
+        <span class="bud-name">${esc(b.category)}</span>
+        <span class="bud-bar"><span class="bud-fill" style="width:${Math.max(0, Math.min(100, b.fraction * 100)).toFixed(1)}%"></span>${plan.elapsed > 0 && plan.elapsed < 1 ? `<span class="bud-pace" style="left:${pace}%"></span>` : ''}</span>
+      </span>
+      <span class="bud-right">
+        <strong class="${over ? 'neg' : ''}">${nb(b.spent)}</strong>
+        <span class="muted">of ${esc(formatMoney(b.limit, { decimals: decimals() }))}</span>
+      </span>
     </li>`;
 }
 
@@ -1371,7 +1384,10 @@ function renderBudgets() {
     ${planHero(plan, monthLabel(year, month).split(' ')[0], { split: false })}
     <section class="gap-lg">
       ${sectionTitle('By category', '<button class="link" data-action="edit-budgets">Edit</button>')}
-      <ul class="card list padded">${sorted.map((b) => budgetRow(b, plan.daysLeft)).join('')}</ul>
+      <div class="card bud-card">
+        <div class="bud-head"><span>Categories</span><span>Spent / Budget</span></div>
+        <ul class="bud-list">${sorted.map((b) => budgetRow(b, plan)).join('')}</ul>
+      </div>
     </section>
     <button class="btn-secondary" data-action="new-budget">+ New budget</button>
     <p class="hint small">Budgets repeat every month. The Telegram bot uses the same limits.</p>`;
@@ -1628,6 +1644,7 @@ function renderWallet(name) {
         style,
         tag: 'div',
         negative: balance < 0,
+        wallet: name,
       })}
       <div class="card wallet-flow">
         ${flowStat('+', 'Income', nbw(flow.moneyIn))}

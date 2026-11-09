@@ -5,7 +5,7 @@
 //
 // Everything in this file is plain logic (no screen, no storage), so it can be tested on its own.
 
-export const DEFAULT_PREFS = { reminder: true, reminderTime: '20:00', daily: true, weekly: true, insightTime: '08:00', activity: true, telegram: true };
+export const DEFAULT_PREFS = { reminder: true, reminderTime: '20:00', daily: true, weekly: true, insightTime: '08:00', activity: true, telegram: true, entries: true };
 export const MAX_ITEMS = 40;
 const ADJUST = 'Balance adjustment';
 
