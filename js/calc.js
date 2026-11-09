@@ -69,6 +69,24 @@ export function groupWallets(wallets, balances, base = '') {
     }));
 }
 
+/**
+ * Wallets grouped by currency: the default currency first, then every other currency A–Z.
+ * [{currency, base, total, wallets: [{name, type, card, balance, currency}]}], wallets in sheet order.
+ */
+export function groupByCurrency(wallets, balances, base = '') {
+  const groups = new Map();
+  for (const w of wallets) {
+    const isBase = isBaseWallet(w, base);
+    const currency = isBase ? base : String(w.currency).toUpperCase();
+    if (!groups.has(currency)) groups.set(currency, { currency, base: isBase, total: 0, wallets: [] });
+    const group = groups.get(currency);
+    const balance = balances.get(w.name) || 0;
+    group.wallets.push({ name: w.name, type: w.type || 'Other', card: w.card || '', balance, currency: w.currency || '' });
+    group.total += balance;
+  }
+  return [...groups.values()].sort((a, b) => (a.base === b.base ? a.currency.localeCompare(b.currency) : a.base ? -1 : 1));
+}
+
 // ---------- pay cycle ----------
 // A "month" runs from payday to the day before the next payday (set in Settings; the Telegram bot uses the same).
 // Payday 1 is the calendar month. Otherwise the cycle is named after the month it ends in, so with payday 25

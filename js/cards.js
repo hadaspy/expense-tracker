@@ -40,7 +40,7 @@ const TYPE_COLOURS = {
 
 /** "royal|waves|•••• 0329|visa" → {colour, pattern, label, scheme}, with type-based defaults. */
 export function parseCard(card, type = '') {
-  const [colour = '', pattern = '', label = '', scheme = '', valid = '', finish = ''] = String(card || '').split('|');
+  const [colour = '', pattern = '', label = '', scheme = '', valid = '', finish = '', logo = ''] = String(card || '').split('|');
   const known = CARD_COLOURS.some(([id]) => id === colour);
   return {
     colour: known ? colour : TYPE_COLOURS[String(type).toLowerCase()] || 'midnight',
@@ -49,11 +49,12 @@ export function parseCard(card, type = '') {
     scheme: CARD_SCHEMES.some(([id]) => id === scheme) ? scheme : '',
     valid: /^(0[1-9]|1[0-2])\/\d{2}$/.test(valid) ? valid : '',
     finish: CARD_FINISHES.some(([id]) => id === finish) ? finish : 'grain',
+    logo: /^[a-z0-9.-]{3,60}$/i.test(logo) ? logo.toLowerCase() : '',
   };
 }
 
-export const formatCard = ({ colour, pattern, label, scheme, valid, finish }) =>
-  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || '', finish && finish !== 'grain' ? finish : ''].join('|').replace(/\|+$/, '');
+export const formatCard = ({ colour, pattern, label, scheme, valid, finish, logo }) =>
+  [colour, pattern, String(label || '').replace(/\|/g, '').trim(), scheme || '', valid || '', finish && finish !== 'grain' ? finish : '', logo || ''].join('|').replace(/\|+$/, '');
 
 const background = (colour) => (CARD_COLOURS.find(([id]) => id === colour) || CARD_COLOURS[1])[2];
 
@@ -176,6 +177,10 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
           <span class="valid-slash">/</span>
           <select data-f="valid-year" aria-label="Valid thru year">${validYears(style.valid.slice(3)).map((y) => `<option ${y === style.valid.slice(3) ? 'selected' : ''}>${y}</option>`).join('')}</select>
         </div>` : ''}
+        <label class="field">
+          <span class="field-label">Logo website <span class="muted">(optional)</span></span>
+          <input class="note-input" data-f="logo" maxlength="60" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Automatic from the name, or e.g. bca.co.id" value="${esc(style.logo || '')}">
+        </label>
         <p class="muted small field-help">Saved in your sheet (Wallets → Card), so the card looks the same on every device.</p>
       </div>
       <div class="sheet-foot">
@@ -197,7 +202,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
       if (act === 'scheme') style.scheme = v;
       if (act === 'pattern') style.pattern = v;
       if (act === 'finish') style.finish = v;
-      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '', valid: '' });
+      if (act === 'reset') Object.assign(style, parseCard('', wallet.type), { label: '', scheme: '', valid: '', logo: '' });
       const scroll = sheet.querySelector('.sheet-body').scrollTop;
       render();
       sheet.querySelector('.sheet-body').scrollTop = scroll;
@@ -236,6 +241,7 @@ export function openCardSheet({ wallet, amountHtml, negative, onSave }) {
   });
 
   backdrop.addEventListener('input', (event) => {
+    if (event.target.dataset.f === 'logo') { style.logo = event.target.value.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase(); return; }
     if (event.target.dataset.f !== 'label') return;
     style.label = event.target.value.replace(/\|/g, '');
     refreshPreview();

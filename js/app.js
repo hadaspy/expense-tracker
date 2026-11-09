@@ -3,18 +3,21 @@
 import {
   EMPTY_FILTERS, EXPENSE, FREQUENCY_NAMES, INCOME, RANGES, TRANSFER,
   activeFilterCount, byCategory, cashFlow, categorySlots, dayLabel, filterTransactions, formatDateTime, formatMoney, splitNumber,
-  goalProgress, groupWallets, inMonth, isBaseWallet, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
+  goalProgress, groupByCurrency, inMonth, isBaseWallet, isCustomCycle, monthInsights, monthLabel, monthPlan, monthTotals, netWorth,
   occurrences, periodBounds, periodOf, periodRange, prepareTransactions, rangeBounds, setPayCycle, spendingParts, summarize,
   timeAgo, toCsv, walletBalances, walletFlow,
 } from './calc.js';
 import { openBalanceSheet } from './balance.js';
 import { openBudgetSheet } from './budgets.js';
 import { cardHtml, openCardSheet, parseCard } from './cards.js';
+import { walletLogo } from './logos.js';
 import { cashFlowChart, readout, segmentedBar } from './charts.js';
 import { demoData } from './demo.js';
 import { openEntrySheet } from './entry.js';
 import { openFilterSheet } from './filters.js';
 import { openAddMoneySheet, openGoalSheet } from './goals.js';
+import { applyCategoryEdit } from './catedit.js';
+import { openNameSheet } from './categories.js';
 import { openNewBudgetSheet } from './newbudget.js';
 import { DEFAULT_PREFS, evaluate, unreadCount } from './notify.js';
 import { openPaydaySheet } from './payday.js';
@@ -22,12 +25,12 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, categoryIcon, esc, highlight, icon, reducedMotion } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '4.9.0';
+const APP_VERSION = '5.0.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
 const TAB_TITLES = { home: 'Home', wallets: 'Wallets', budgets: 'Budgets', reports: 'Reports', more: 'More' };
-const VIEW_TITLES = { settings: 'Settings', transactions: 'Transactions', recurring: 'Recurring', notifications: 'Notifications' };
+const VIEW_TITLES = { settings: 'Settings', transactions: 'Transactions', recurring: 'Recurring', notifications: 'Notifications', categories: 'Categories' };
 
 // ---------- storage (wrapped: private mode or cleared data must not break the app) ----------
 
@@ -54,6 +57,7 @@ const freshFilters = () => ({ ...EMPTY_FILTERS, wallets: [], categories: [] });
 const state = {
   tab: 'home',
   plan: 'budgets',            // Plan tab: 'budgets' | 'goals'
+  catType: 'Expense',         // Categories screen: which list is shown
   view: null,                 // null | 'settings' | 'transactions' | 'recurring' | { wallet: name }
   month: { year: today.getFullYear(), month: today.getMonth() },
   filters: freshFilters(),    // Transactions: type chips + the Filters sheet
@@ -128,6 +132,89 @@ function computed() {
   return memo;
 }
 
+// ---------- categories ----------
+
+/** Runs one category change: on the sheet (the answer says what changed) or, in the sample data, locally. */
+async function runCategoryOp(op) {
+  let patch;
+  if (isDemo) {
+    patch = applyCategoryEdit(state.data, op);
+  } else if (op.op === 'addCategory') {
+    patch = { categories: (await apiPost({ action: 'addCategory', type: op.type, name: op.name })).categories };
+  } else {
+    const { ok, error, ...rest } = await apiPost({ action: 'editCategory', ...op });
+    patch = rest;
+  }
+  setData(patch);
+}
+
+function openCategorySheet(kind, category, sub) {
+  const type = state.catType;
+  const lower = type.toLowerCase();
+  const done = (message) => toast(message);
+  if (kind === 'new-category') {
+    openNameSheet({
+      title: `New ${lower} category`, label: 'Name', saveLabel: 'Add category',
+      onSave: async (name) => { await runCategoryOp({ op: 'addCategory', type, name }); done('Category added'); },
+    });
+  } else if (kind === 'edit-category') {
+    openNameSheet({
+      title: 'Edit category', label: 'Name', value: category, saveLabel: 'Save',
+      hint: 'Renaming also updates your budgets, entries and recurring items that use it.',
+      onSave: async (name) => {
+        if (name.trim() === category) return;
+        await runCategoryOp({ op: 'renameCategory', type, category, newName: name });
+        done('Category renamed');
+      },
+      onDelete: async () => { await runCategoryOp({ op: 'deleteCategory', type, category }); done('Category deleted'); },
+    });
+  } else if (kind === 'new-sub') {
+    openNameSheet({
+      title: `New subcategory in ${category}`, label: 'Name', saveLabel: 'Add subcategory',
+      onSave: async (name) => { await runCategoryOp({ op: 'addSubcategory', type, category, name }); done('Subcategory added'); },
+    });
+  } else if (kind === 'edit-sub') {
+    openNameSheet({
+      title: `Edit subcategory`, label: `Name (in ${category})`, value: sub, saveLabel: 'Save',
+      hint: 'Renaming also updates the entries that use it. Deleting it leaves those entries in the category without a subcategory.',
+      onSave: async (name) => {
+        if (name.trim() === sub) return;
+        await runCategoryOp({ op: 'renameSubcategory', type, category, name: sub, newName: name });
+        done('Subcategory renamed');
+      },
+      onDelete: async () => { await runCategoryOp({ op: 'deleteSubcategory', type, category, name: sub }); done('Subcategory deleted'); },
+    });
+  }
+}
+
+function renderCategories() {
+  if (!state.data) return '<p class="empty">Loading your data…</p>';
+  const type = state.catType;
+  const groups = state.data.categories?.[type] || {};
+  const names = Object.keys(groups);
+  const list = names.map((name) => `
+      <li class="card cat-card">
+        <button class="cat-head" data-action="edit-category" data-name="${esc(name)}" aria-label="Edit ${esc(name)}">
+          <span class="tx-icon ${type.toLowerCase()}">${categoryIcon(name)}</span>
+          <span class="cat-name">${esc(name)}</span>
+          <span class="muted small">${groups[name].length ? `${groups[name].length} sub` : ''}</span>
+          <span class="row-chevron">${ICONS.chevron}</span>
+        </button>
+        <div class="cat-subs">
+          ${groups[name].map((s) => `<button class="chip" data-action="edit-sub" data-name="${esc(name)}" data-sub="${esc(s)}">${esc(s)}</button>`).join('')}
+          <button class="chip add-chip" data-action="new-sub" data-name="${esc(name)}">+ Subcategory</button>
+        </div>
+      </li>`).join('');
+  return `
+    <div class="segmented two" role="tablist">
+      ${[['Expense', 'Expenses'], ['Income', 'Income']].map(([v, label]) => `
+        <button type="button" role="tab" aria-selected="${type === v}" class="seg ${type === v ? 'active' : ''}" data-action="cat-type" data-type="${v}">${label}</button>`).join('')}
+    </div>
+    <ul class="cat-list">${list || `<li class="empty">No ${type.toLowerCase()} categories yet.</li>`}</ul>
+    <button class="btn-secondary" data-action="new-category">+ New category</button>
+    <p class="hint small">Tap a category or subcategory to rename or delete it. A category that entries still use can't be deleted, but you can rename it. Budgets are set under Budgets.</p>`;
+}
+
 // ---------- notifications (see notify.js) ----------
 
 let notifyStore = isDemo ? null : storage.get(KEYS.notify); // {items, seen, prefs}; sample data keeps them in memory only
@@ -178,6 +265,10 @@ function setNotifyPref(name, value) {
   notifyStore = { items: [], seen: undefined, ...(notifyStore || {}), prefs: { ...notifyPrefs(), [name]: value } };
   if (!notifyStore.seen) delete notifyStore.seen;
   saveNotify();
+  // The schedule for Telegram lives on the server, so the bot sends the same things while the app is closed
+  if (!isDemo && ['reminder', 'reminderTime', 'daily', 'weekly', 'insightTime', 'telegram'].includes(name)) {
+    apiPost({ action: 'setNotify', [name]: value }).catch((error) => toast(`Couldn't save for Telegram: ${error.message}`));
+  }
   checkNotifications();
   const scroll = window.scrollY;
   render();
@@ -226,6 +317,7 @@ function renderNotifications() {
       ${row('reminder', 'Reminder to add entries', 'If nothing is logged for today by the time you choose.', time('reminderTime', 'Remind me at'))}
       ${row('daily', 'Daily insight', 'Yesterday\'s total expense, your biggest category and how it compares with a usual day.')}
       ${row('weekly', 'Weekly insight', 'Last week\'s spending, the change from the week before, your top category and income.')}
+      ${row('telegram', 'Also send them to Telegram', 'The bot sends the reminder and the insights even while the app is closed. Needs the bot connected and its timer set up (see the README).')}
       ${row('activity', 'Entries added outside the app', 'A note for entries made from a Shortcut, Telegram or the sheet.')}
       <div class="notify-foot">${time('insightTime', 'Insights appear from')}</div>
     </section>
@@ -278,6 +370,11 @@ async function refresh() {
     if (cycleChanged) state.month = periodOf(new Date());
     state.fetchedAt = Date.now();
     storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
+    if (data.notify) { // the server's choices (shared with the Telegram bot) win
+      notifyStore = { items: [], ...(notifyStore || {}), prefs: { ...notifyPrefs(), ...data.notify } };
+      if (!notifyStore.seen) delete notifyStore.seen;
+      saveNotify();
+    }
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -1031,23 +1128,7 @@ function renderHome() {
   const cycle = periodOf(now);
   const monthTxs = inMonth(baseTxs, cycle.year, cycle.month);
   const plan = monthPlan(state.data.budgets, monthTxs, cycle.year, cycle.month, now);
-  const goals = goalsWithProgress();
   const cycleName = monthLabel(cycle.year, cycle.month).split(' ')[0];
-
-  const goalTile = goals.length
-    ? `<button class="card tile wide goals-tile" data-action="plan" data-plan="goals">
-        <span class="tile-head"><span class="overline">Goals</span><span class="link">See all</span></span>
-        ${goals.slice(0, 2).map((g) => `
-          <span class="mini-goal">
-            <span class="mini-goal-line"><span class="serif">${esc(g.name)}</span><span>${Math.round(g.fraction * 100)}%</span></span>
-            ${bar(g.fraction, g.reached ? 'pos' : 'accent')}
-          </span>`).join('')}
-      </button>`
-    : `<button class="card tile wide goals-tile empty-goal" data-action="add-goal">
-        <span class="overline">Goals</span>
-        <span class="serif tile-big">Start saving for something</span>
-        <span class="tile-sub">Emergency fund, a laptop, a trip… <span class="link">Create a goal →</span></span>
-      </button>`;
 
   // Recurring items still to come before the next payday
   const end = periodBounds(cycle.year, cycle.month).end;
@@ -1073,16 +1154,17 @@ function renderHome() {
     </div>
     ${budgetRings(plan, monthTxs)}
     ${walletCards()}
-    <section class="card cash-card">
-      <span class="tile-head"><span class="overline">Cash flow · ${esc(cycleName)}</span></span>
-      <strong class="cash-net ${plan.income - plan.expense < 0 ? 'neg' : ''}">${plan.income - plan.expense < 0 ? '−' : ''}${nb(Math.abs(plan.income - plan.expense))}</strong>
-      <div class="flow-pair">
-        ${flowStat('+', 'Income', nb(plan.income))}
-        ${flowStat('−', 'Spending', nb(plan.expense))}
+    <section class="card cash-card cash-simple" aria-label="Cash flow ${esc(cycleName)}">
+      <div class="cash-left">
+        <span class="overline">Cash flow · ${esc(cycleName)}</span>
+        <strong class="cash-net ${plan.income - plan.expense < 0 ? 'neg' : 'pos'}">${plan.income - plan.expense < 0 ? '−' : ''}${nb(Math.abs(plan.income - plan.expense))}</strong>
+      </div>
+      <div class="cash-right">
+        <span class="pos" aria-label="Income">+${nb(plan.income)}</span>
+        <span class="neg" aria-label="Spending">−${nb(plan.expense)}</span>
       </div>
     </section>
     ${scheduled}
-    <section class="gap-sm">${goalTile}</section>
     <section class="gap-xl">
       ${sectionTitle('Recent', '<button class="link" data-action="open-view" data-view="transactions">See all</button>')}
       ${txs.length ? txListByDay(txs, { limit: 5, showMore: false }) : '<p class="empty">No transactions yet. Tap <strong>+</strong> to add one.</p>'}
@@ -1133,12 +1215,13 @@ function renderWallets() {
   });
   const hero = carouselHtml('worth', specs, 'Net worth');
 
-  const row = (w, balance) => `
+  // One line per wallet: logo, name and type on the left, balance on the right (in the wallet's own currency)
+  const row = (w) => `
         <li>
-          <button class="row" data-action="wallet" data-name="${esc(w.name)}">
-            <span class="row-label">${esc(w.name)}</span>
-            <span class="row-value ${balance < 0 ? 'neg' : ''}">${esc(moneyFor(w.name, balance))}</span>
-            <span class="row-chevron">${ICONS.chevron}</span>
+          <button class="row wallet-row" data-action="wallet" data-name="${esc(w.name)}">
+            ${walletLogo(w, parseCard(w.card, w.type).logo)}
+            <span class="wallet-text"><span class="row-label">${esc(w.name)}</span><span class="muted small">${esc(w.type)}</span></span>
+            <span class="row-value ${w.balance < 0 ? 'neg' : ''}">${esc(moneyFor(w.name, w.balance))}</span>
           </button>
         </li>`;
 
@@ -1156,10 +1239,11 @@ function renderWallets() {
           </li>`).join('')}
       </ul>`;
   } else {
-    list = groupWallets(wallets, balances, currency()).map((group) => `
-    <h3 class="group-title"><span>${esc(group.type)}</span>${group.baseCount > 1 ? `<span class="${group.total < 0 ? 'neg' : ''}">${esc(money(group.total))}</span>` : ''}</h3>
+    // Only split by currency: the default one, then every other currency (no Bank / Credit card headings)
+    list = groupByCurrency(wallets, balances, currency()).map((group) => `
+    <h3 class="group-title"><span>${esc(group.base ? (currency() || 'Accounts') : group.currency)}</span><span class="${group.total < 0 ? 'neg' : ''}">${esc(formatMoney(group.total, { currency: group.base ? currency() : group.currency, decimals: decimals() }))}</span></h3>
     <ul class="card list">
-      ${group.wallets.map((w) => row(w, w.balance)).join('')}
+      ${group.wallets.map(row).join('')}
     </ul>`).join('');
   }
   return `
@@ -1178,6 +1262,7 @@ function renderMore() {
     ['open-view', 'transactions', ICONS.transactions, 'Transactions', 'Search, filter and export'],
     ['open-view', 'recurring', ICONS.repeat, 'Recurring', recurringItems().length ? `${active} active` : 'Rent, subscriptions, salary…'],
     ['plan', 'goals', ICONS.goal, 'Goals', goals ? `${goals} saving goal${goals === 1 ? '' : 's'}` : 'Save for something'],
+    ['open-view', 'categories', icon('tag'), 'Categories', 'Edit categories and subcategories'],
     ['notifications', '', icon('bell'), 'Notifications', unreadCount(notifyStore) ? `${unreadCount(notifyStore)} unread` : 'Reminders and insights'],
     ['cycle', '', ICONS.calendar, 'Pay cycle', cycleSummary()],
     ['settings', '', ICONS.settings, 'Settings', 'Connection, currency, decimals'],
@@ -1680,6 +1765,7 @@ function syncMark() {
 function menuItems() {
   if (!state.data) return [];
   if (state.view === 'notifications') return [];
+  if (state.view === 'categories') return [['new-category', '', ICONS.plus, `New ${state.catType.toLowerCase()} category`]];
   const wallet = state.view?.wallet;
   if (wallet) {
     if (!(state.data.wallets || []).some((w) => w.name === wallet)) return [];
@@ -1735,6 +1821,7 @@ function renderHeader() {
 function mainHtml() {
   if (state.view === 'settings') return renderSettings();
   if (state.view === 'notifications') return renderNotifications();
+  if (state.view === 'categories') return renderCategories();
   if (!state.data) {
     return state.loading || !state.error
       ? '<p class="empty">Loading your data…</p>'
@@ -1914,6 +2001,11 @@ app.addEventListener('click', async (event) => {
       closeSwipes();
       target.disabled = false;
     }
+  } else if (action === 'cat-type') {
+    state.catType = target.dataset.type;
+    render();
+  } else if (action === 'new-category' || action === 'edit-category' || action === 'new-sub' || action === 'edit-sub') {
+    openCategorySheet(action, target.dataset.name, target.dataset.sub);
   } else if (action === 'notifications') {
     openNotifications();
   } else if (action === 'open-notifications') {
@@ -2209,7 +2301,7 @@ const startHash = location.hash.slice(1);
 const legacyTabs = { overview: 'home', summary: 'reports', goals: 'budgets', plan: 'budgets' };
 const startTab = legacyTabs[startHash] || startHash;
 if (TABS.includes(startTab)) state.tab = startTab;
-if (startTab === 'transactions' || startTab === 'recurring' || startTab === 'notifications') state.view = startTab;
+if (startTab === 'transactions' || startTab === 'recurring' || startTab === 'notifications' || startTab === 'categories') state.view = startTab;
 if (startHash === 'goals') state.plan = 'goals';
 
 // A link straight to a screen (#transactions) still gets a Home entry behind it, so Back and the tabs work
