@@ -26,7 +26,7 @@ import { openWalletSheet } from './wallets.js';
 import { ICONS, autoCategoryColour, autoCategoryIcon, categoryColour, categoryIcon, categoryStyle, esc, highlight, icon, reducedMotion, setCategoryStyles } from './ui.js';
 
 const ADJUST_CATEGORY = 'Balance adjustment'; // same name as in the sheet script
-const APP_VERSION = '5.4.0';
+const APP_VERSION = '5.5.0';
 const KEYS = { settings: 'expense-tracker.settings', cache: 'expense-tracker.cache', appearance: 'expense-tracker.appearance', notify: 'expense-tracker.notifications', outbox: 'expense-tracker.outbox', name: 'expense-tracker.name' };
 const REFRESH_AFTER_MS = 60 * 1000; // refresh when reopening the app after a minute
 const TABS = ['home', 'wallets', 'budgets', 'reports', 'more'];
@@ -122,7 +122,9 @@ function computed() {
   if (memo?.source !== state.data || memo.cur !== currency()) {
     const wallets = state.data.wallets || [];
     const txs = prepareTransactions(state.data.transactions || []);
-    const balances = walletBalances(wallets, txs);
+    // While only recent entries are loaded, `carry` holds what the older ones add up to per wallet
+    const carry = state.data.carry;
+    const balances = walletBalances(carry ? wallets.map((w) => ({ ...w, openingBalance: (w.openingBalance || 0) + (carry[w.name] || 0) })) : wallets, txs);
     const baseNames = new Set(wallets.filter(isBase).map((w) => w.name));
     memo = {
       source: state.data, cur: currency(), txs, balances, baseNames,
@@ -378,10 +380,37 @@ const outbox = createOutbox({
   load: () => (isDemo ? [] : storage.get(KEYS.outbox)),
   save: (items) => { if (!isDemo) storage.set(KEYS.outbox, items); },
   onStatus: () => { if (app.querySelector('.topbar')) renderHeader(); },
-  onIdle: (sent) => { if (sent || needRefresh) { needRefresh = false; refresh(); } },
+  // Only reload when needed: after the app's own saves its copy already matches the sheet (see commit)
+  onIdle: () => { if (needRefresh) { needRefresh = false; refresh(); } },
   onError: (item, error) => { needRefresh = true; toast(`${item.label || 'Not saved'}: ${error.message}`); },
 });
 const syncing = () => state.loading || outbox.pending() > 0;
+if (outbox.pending()) needRefresh = true; // left over from last time: their answers aren't known here
+
+// Data parts the server sends back after a save; with nothing else waiting they replace the phone's guess
+const EXACT_KEYS = ['wallets', 'budgets', 'goals', 'categories', 'categoryStyles', 'recurring', 'settings'];
+const TX_KEYS = ['id', 'date', 'type', 'amount', 'wallet', 'toWallet', 'category', 'subcategory', 'note'];
+/** Entries arrive as rows [id, date, type, …] (half the size); the app works with objects. */
+const fromRows = (list) => (list || []).map((r) => (Array.isArray(r) ? Object.fromEntries(TX_KEYS.map((k, i) => [k, r[i]])) : r));
+const saveCache = () => { if (!isDemo && state.data) storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt }); };
+
+/**
+ * After a save, the server says which version it changed from and to. If it changed from the version this phone
+ * has, nobody else changed anything in between, so the phone's copy is current: no reload needed.
+ */
+function handshake(body, result) {
+  if (!result || result.versionBefore === undefined || !state.data) return;
+  if (state.data.version === result.versionBefore) state.data.version = result.version;
+  else needRefresh = true;
+  if (result.created) needRefresh = true; // recurring catch-up entries the phone doesn't have yet
+  if (!outbox.pending()) {
+    const exact = {};
+    for (const k of EXACT_KEYS) if (result[k] && typeof result[k] === 'object') exact[k] = result[k];
+    if (body.action === 'editCategory' && Array.isArray(result.transactions)) exact.transactions = result.transactions;
+    if (Object.keys(exact).length) { setData(exact); return; }
+  }
+  saveCache();
+}
 
 /**
  * Shows a change at once and sends it to Google in the background. If Google refuses it, the change is undone
@@ -396,7 +425,8 @@ function commit({ patch = null, body = null, label = '', key = '', onDone, onFai
   }
   if (isDemo || !body) return;
   outbox.push(body, {
-    label, key, onDone,
+    label, key,
+    onDone: (result) => { handshake(body, result); onDone?.(result); },
     onFail: (error, left) => {
       needRefresh = true;
       if (onFail) onFail(error, left); else undo?.(left);
@@ -407,41 +437,102 @@ function commit({ patch = null, body = null, label = '', key = '', onDone, onFai
 }
 let offlineNoted = false;
 
+/** The day from which the first download brings entries; the rest follows right after (loadOlder). */
+const recentFrom = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 62); // the current pay cycle, the one before it, and the last weeks for the insights
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+function useData(data) {
+  delete data.ok;
+  delete data.txFormat;
+  data.transactions = fromRows(data.transactions);
+  const cycleChanged = JSON.stringify(data.settings) !== JSON.stringify(state.data?.settings);
+  state.data = data;
+  syncCycle();
+  if (cycleChanged) state.month = periodOf(new Date());
+  if (data.notify) { // the server's choices (shared with the Telegram bot) win
+    notifyStore = { items: [], ...(notifyStore || {}), prefs: { ...notifyPrefs(), ...data.notify } };
+    if (!notifyStore.seen) delete notifyStore.seen;
+    saveNotify();
+  }
+}
+
+/** Only what changed since the phone's version: replaced wallets/budgets/…, added or edited entries, deleted ids. */
+function useDelta(delta) {
+  const next = { ...state.data, version: delta.version };
+  for (const k of [...EXACT_KEYS, 'notify', 'sheet']) if (delta[k] !== undefined) next[k] = delta[k];
+  const gone = new Set(delta.deletes || []);
+  const txs = (state.data.transactions || []).filter((t) => !gone.has(t.id));
+  const at = new Map(txs.map((t, i) => [t.id, i]));
+  for (const t of fromRows(delta.upserts)) {
+    if (at.has(t.id)) txs[at.get(t.id)] = t; else txs.push(t);
+  }
+  next.transactions = txs;
+  useData(next);
+}
+
+let olderLoading = false;
+/** Second part of the first download: everything before `from`, added under the recent entries. */
+async function loadOlder() {
+  if (olderLoading || !state.data?.partial || isDemo) return;
+  olderLoading = true;
+  try {
+    const older = await apiGet(`data&compact=1&scope=older&from=${state.data.from}`);
+    if (!state.data?.partial) return;
+    if (older.version !== state.data.version) {
+      state.data.version = ''; // something else changed meanwhile: the next refresh downloads everything
+      needRefresh = true;
+      return;
+    }
+    const next = { ...state.data, transactions: [...fromRows(older.transactions), ...state.data.transactions] };
+    delete next.partial;
+    delete next.carry;
+    delete next.from;
+    state.data = next;
+    saveCache();
+    render();
+  } catch (error) {
+    // tried again on the next refresh
+  } finally {
+    olderLoading = false;
+    if (needRefresh && !outbox.pending()) { needRefresh = false; refresh(); }
+  }
+}
+
 async function refresh() {
-  if (isDemo || state.loading || !settings.url || !settings.key) return;
+  if (isDemo || state.loading || olderLoading || !settings.url || !settings.key) return;
   if (outbox.pending()) { needRefresh = true; outbox.run(); return; } // send what's waiting first; this runs again after
   state.loading = true;
   state.error = null;
   renderHeader();
   const startedAt = edits;
   try {
-    const since = state.data?.version ? `&since=${encodeURIComponent(state.data.version)}` : '';
-    const data = await apiGet(`data${since}`);
+    // First time on this phone: just the last two months (enough for Home), the rest right after.
+    // Otherwise: the version the phone has, so Google can answer "unchanged" or send only what changed.
+    let query = '';
+    if (!state.data) query = `&scope=recent&from=${recentFrom()}`;
+    else if (state.data.version && !state.data.partial) query = `&since=${encodeURIComponent(state.data.version)}`;
+    const data = await apiGet(`data&compact=1${query}`);
     if (edits !== startedAt || outbox.pending()) {
       needRefresh = true; // something changed on this phone meanwhile: this copy is already out of date
     } else if (data.unchanged) {
-      state.fetchedAt = Date.now();
-      storage.set(KEYS.cache, { data: state.data, fetchedAt: state.fetchedAt });
+      // nothing new
+    } else if (data.delta) {
+      useDelta(data);
     } else {
-      delete data.ok;
-      const cycleChanged = JSON.stringify(data.settings) !== JSON.stringify(state.data?.settings);
-      state.data = data;
-      syncCycle();
-      if (cycleChanged) state.month = periodOf(new Date());
-      state.fetchedAt = Date.now();
-      storage.set(KEYS.cache, { data, fetchedAt: state.fetchedAt });
-      if (data.notify) { // the server's choices (shared with the Telegram bot) win
-        notifyStore = { items: [], ...(notifyStore || {}), prefs: { ...notifyPrefs(), ...data.notify } };
-        if (!notifyStore.seen) delete notifyStore.seen;
-        saveNotify();
-      }
+      useData(data);
     }
+    if (!needRefresh) state.fetchedAt = Date.now();
+    saveCache();
   } catch (error) {
     state.error = error.message;
   } finally {
     state.loading = false;
     render();
-    if (needRefresh && !outbox.pending()) { needRefresh = false; setTimeout(refresh, 300); }
+    if (state.data?.partial) loadOlder();
+    else if (needRefresh && !outbox.pending()) { needRefresh = false; setTimeout(refresh, 300); }
   }
 }
 
@@ -1855,6 +1946,7 @@ function headerHtml() {
       ${items.map(([action, attrs, icon, label, danger]) => `<button role="menuitem" class="menu-item ${danger ? 'danger' : ''}" data-action="${action}" ${attrs}>${icon}<span>${label}</span></button>`).join('')}
     </div>` : ''}
     ${isDemo ? '<p class="banner">Sample data — changes aren\'t saved. <a href="./">Exit preview</a></p>' : ''}
+    ${state.data?.partial ? '<p class="banner subtle" aria-live="polite">Loading older entries…</p>' : ''}
     ${state.error ? `<p class="banner error">Couldn't update: ${esc(state.error)}${state.data ? ' Showing saved data.' : ''}</p>` : ''}`;
 }
 
